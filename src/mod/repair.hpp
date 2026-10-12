@@ -2906,6 +2906,13 @@ inline std::vector<std::string> baseArgs(const std::string& out,
             a.push_back(std::to_string((240 + cps - 1) / cps));
         }
     }
+    // Kairos: which of the routes reaching the end the search keeps ("solve-goal").
+    if (const auto goal = Mod::get()->getSettingValue<std::string>("solve-goal"); goal == "Fewest inputs") {
+        a.push_back("--fewpress");
+    } else if (goal == "Most lenient windows") {
+        a.push_back("--tightpx");
+        a.push_back("12");
+    }
     for (const std::string& s : g_cfg.dpArgs) a.push_back(s);
     // An input grid (cfg dpinputgrid, or dparg=--inputgrid) is a cheap search, not the loop's
     // last word: once the loop has escalated to a capacity tier or thrown the prefix away, the

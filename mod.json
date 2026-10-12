@@ -92,6 +92,13 @@
 			"min": 2,
 			"max": 48
 		},
+		"solve-goal": {
+			"name": "Solve for",
+			"description": "Which route Solve keeps among those that clear, and what Optimize works on. Fewest inputs: the route with the fewest presses, then merges and removals until none is left. Most lenient windows: the route with the most room around the player, then every press and release with less than 6 ticks each way is centred.",
+			"type": "string",
+			"default": "Balanced",
+			"one-of": ["Balanced", "Fewest inputs", "Most lenient windows"]
+		},
 		"max-cps": {
 			"name": "Max clicks per second",
 			"description": "Solve and Optimize keep two presses at least 1/N second apart. 0 = no limit (the minimum press and gap above already cap it at 240 / (2 x that) per second). Ignored with Go crazy!",

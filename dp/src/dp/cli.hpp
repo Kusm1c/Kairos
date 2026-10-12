@@ -1892,6 +1892,7 @@ inline int cliMainOnce(int argc, char** argv) {
         if (!std::strcmp(argv[i], "--no-autoown")) g_autoOwn = false;
         // --twinaudit (search_census.hpp): value-less.
         if (!std::strcmp(argv[i], "--twinaudit")) g_twinAudit = true;
+        if (!std::strcmp(argv[i], "--fewpress")) g_fewPress = true;   // Kairos
         if (!std::strcmp(argv[i], "--heldkeyread")) g_heldKeyRead = true;   // value-less
         if (!std::strcmp(argv[i], "--no-heldkeyread")) g_heldKeyRead = false;
         // --trigraw: autonomous triggers behind the anchor trust the
@@ -2114,6 +2115,7 @@ inline int cliMainOnce(int argc, char** argv) {
         if (!std::strcmp(argv[i], "--keyxqfly")) g_keyXqFly = std::atof(argv[i + 1]);
         if (!std::strcmp(argv[i], "--minpulse")) g_minPulse = std::atoi(argv[i + 1]);
         if (!std::strcmp(argv[i], "--minpressgap")) g_minPressGap = std::atoi(argv[i + 1]);   // Kairos
+        if (!std::strcmp(argv[i], "--tightpx")) g_tightPx = std::atof(argv[i + 1]);   // Kairos
         if (!std::strcmp(argv[i], "--inputgrid")) g_inputGrid = std::atoi(argv[i + 1]);
         if (!std::strcmp(argv[i], "--shipvq")) g_shipVq = std::atof(argv[i + 1]);
         if (!std::strcmp(argv[i], "--snaplog")) snapLogPath = argv[i + 1];

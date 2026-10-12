@@ -64,6 +64,19 @@ if (GDSOLVER_BUILD_MOD)
         message(STATUS "Found Geode: $ENV{GEODE_SDK}")
     endif()
 
+    # Kairos: the bindings commit gdsolver builds with (newer ones make GJGameState non-copyable,
+    # which src/solver/psnap.hpp needs): a clone beside the repository, else downloaded.
+    # GEODE_BINDINGS_REPO_PATH in the environment still wins.
+    get_filename_component(KAIROS_BINDINGS ${CMAKE_CURRENT_SOURCE_DIR}/../Kairos-bindings ABSOLUTE)
+    if (EXISTS ${KAIROS_BINDINGS}/bindings)
+        set(GEODE_BINDINGS_REPO_PATH ${KAIROS_BINDINGS})
+    else()
+        include($ENV{GEODE_SDK}/cmake/CPM.cmake)
+        CPMAddPackage(NAME "bindings" GITHUB_REPOSITORY "geode-sdk/bindings"
+                      GIT_TAG f050fd74ad531b0827377c97510cb807903ff1b3 DOWNLOAD_ONLY YES NO_CACHE YES)
+        set(GEODE_BINDINGS_REPO_PATH ${bindings_SOURCE_DIR})
+    endif()
+
     add_subdirectory($ENV{GEODE_SDK} ${CMAKE_CURRENT_BINARY_DIR}/geode)
 
     setup_geode_mod(${PROJECT_NAME})

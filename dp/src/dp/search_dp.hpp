@@ -112,7 +112,7 @@ struct ShardMap {           // CellMap's open addressing, key -> rec index
     std::vector<uint32_t> touched;
     std::vector<KeyRec> recs;
     uint32_t goalOrd = kNone;
-    uint16_t goalTight = 0xffff;   // route score; see the goal pick below
+    uint32_t goalTight = 0xffffffffu;   // route score (Kairos: routeScore, 32 bits); see the goal pick below
     size_t mask = 0;
     void ensure(size_t want) {
         size_t n = 1024;
@@ -127,7 +127,7 @@ struct ShardMap {           // CellMap's open addressing, key -> rec index
         touched.clear();
         recs.clear();
         goalOrd = kNone;
-        goalTight = 0xffff;
+        goalTight = 0xffffffffu;
     }
     // ensure() sizes for the EXPECTED keys per shard; a lopsided hash
     // could still overfill one shard's table, and a full open-addressing
@@ -251,7 +251,12 @@ struct CurrentRules {
                && (!coinOn || s.coins == (uint8_t)coinAll);
     }
     // Of two states that reached it, is the one with route score `cand` to replace `held`?
-    bool prefer(uint16_t cand, uint16_t held) const { return roomierRoute(cand, held); }
+    // Kairos: the score `prefer` compares, the route score alone unless --fewpress puts the presses
+    // first (lower is better either way).
+    uint32_t routeScore(const State& s) const {
+        return g_fewPress ? ((uint32_t)s.presses << 16 | s.tight) : (uint32_t)s.tight;
+    }
+    bool prefer(uint32_t cand, uint32_t held) const { return cand < held; }
     // How good `s` is, for a search that ranks states (the beam): more coins first under --coins,
     // then how far it has got.
     double score(const State& s) const {
@@ -1016,7 +1021,7 @@ inline int searchLayers(E& e, const Rules& rules, SearchResult& out) {
                 // solution, and saying so HERE rather than filtering afterwards
                 // is what makes the search look for the other one instead of
                 // reporting the first thing that got to the end.
-                if (rules.reached(s) && (!solved || rules.prefer(s.tight, goalState.tight))) {
+                if (rules.reached(s) && (!solved || rules.prefer(rules.routeScore(s), rules.routeScore(goalState)))) {
                     solved = true;
                     goalState = s;
                 }
@@ -1359,7 +1364,7 @@ inline int searchLayers(E& e, const Rules& rules, SearchResult& out) {
             // the goal pick below; nothing else looks at it.
             if (!dead && kid.s.tight < 0xffff
                 && tightHere(near, (double)kid.s.xAbs, (double)kid.s.y,
-                             playerHalf(kid.s.mode, kid.s.mini != 0), kTightPx))
+                             playerHalf(kid.s.mode, kid.s.mini != 0), g_tightPx))   // Kairos: --tightpx
                 ++kid.s.tight;
             kid.dead = dead ? 1 : 0;
             kid.valid = 1;
@@ -1435,6 +1440,8 @@ inline int searchLayers(E& e, const Rules& rules, SearchResult& out) {
                     if (g_minPressGap > 1)   // Kairos: --minpressgap
                         k.s.pressAge = (p.action != 1)
                                            ? 0 : (uint8_t)std::min(254, (int)p.pressAge + 1);
+                    if (g_fewPress)   // Kairos: --fewpress
+                        k.s.presses = (uint16_t)std::min(0xffff, (int)p.presses + (p.action != 1 ? 1 : 0));
                     if (g_heldAll) {
                         k.s.held = 1;
                         k.s.jumpBuf = 1;
@@ -1642,9 +1649,9 @@ inline int searchLayers(E& e, const Rules& rules, SearchResult& out) {
                     // big layer could take a goal the serial path would refuse.
                     if (accepted && rules.reached(kids[i].s)
                         && (sm.goalOrd == kNone
-                            || rules.prefer(kids[i].s.tight, sm.goalTight))) {
+                            || rules.prefer(rules.routeScore(kids[i].s), sm.goalTight))) {
                         sm.goalOrd = i;
-                        sm.goalTight = kids[i].s.tight;
+                        sm.goalTight = rules.routeScore(kids[i].s);
                     }
                 }
             });
@@ -1679,17 +1686,17 @@ inline int searchLayers(E& e, const Rules& rules, SearchResult& out) {
                 // to min(goalOrd). Against a goal already held, the serial
                 // path's rule: only a roomier one replaces it.
                 uint32_t g = kNone;
-                uint16_t gt = 0xffff;
+                uint32_t gt = 0xffffffffu;   // Kairos: routeScore, 32 bits
                 for (size_t si = 0; si < nsh; ++si) {
                     const uint32_t o = shards[si].goalOrd;
                     if (o == kNone) continue;
-                    const uint16_t ot = shards[si].goalTight;
+                    const uint32_t ot = shards[si].goalTight;
                     if (g == kNone || ot < gt || (ot == gt && o < g)) {
                         g = o;
                         gt = ot;
                     }
                 }
-                if (g != kNone && (!solved || rules.prefer(gt, goalState.tight))) {
+                if (g != kNone && (!solved || rules.prefer(gt, rules.routeScore(goalState)))) {
                     const State& from = cur[gidx[g >> 1]];
                     const uint8_t action = (uint8_t)(g & 1);
                     arena.push_back(
@@ -2793,8 +2800,8 @@ inline int searchBeam(E& e, const Rules& rules, SearchResult& out) {
                 kid.s.parent = s.parent;
                 cand.push_back(Cand{kid.s, (uint8_t)input, rules.score(kid.s)});
                 if (rules.reached(kid.s)
-                    && (goalAt < 0 ? !solved || rules.prefer(kid.s.tight, goalState.tight)
-                                   : rules.prefer(kid.s.tight, cand[(size_t)goalAt].s.tight)))
+                    && (goalAt < 0 ? !solved || rules.prefer(rules.routeScore(kid.s), rules.routeScore(goalState))
+                                   : rules.prefer(rules.routeScore(kid.s), rules.routeScore(cand[(size_t)goalAt].s))))
                     goalAt = (long long)cand.size() - 1;
             }
         }

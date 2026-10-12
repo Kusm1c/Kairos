@@ -673,6 +673,8 @@ inline void resetInvocationState() {
     g_twinAudit = false;
     g_minPulse = 0;
     g_minPressGap = 0;   // Kairos
+    g_fewPress = false;   // Kairos
+    g_tightPx = kTightPx;   // Kairos
     g_inputGrid = 0;
     g_gridMap.clear();
     // ...and the per-coin closest approach, for the same reason: a second solve

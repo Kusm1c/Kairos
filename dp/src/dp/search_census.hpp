@@ -52,6 +52,9 @@ inline int g_inputGrid = 0;
 // (State::pressAge): no faster clicking than 240/K per second is planned. Releases stay free, so
 // a parent always keeps a child, as under --minpulse.
 inline int g_minPressGap = 0;
+// Kairos: --fewpress  of the states that reach the goal, the one whose lineage pressed the fewest
+// times wins (State::presses), the route score breaking ties. A goal pick only, as the route score.
+inline bool g_fewPress = false;
 // --gridmap x0:k0,x1:k1,...: the input grid as a step function of the frontier's leading x (the
 // previous layer's, as --capmap reads it). From x_i on the grid is k_i, where 0 means
 // --inputgrid's value and 1 means none; before the first entry it is --inputgrid. Empty =

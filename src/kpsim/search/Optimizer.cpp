@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <map>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -37,6 +38,13 @@ public:
         merges();
         m_stage = 3;
         removals();
+        // More rounds while they keep taking clicks away.
+        for (int round = 1; round < m_o.rounds; ++round) {
+            const size_t before = m_plan.presses();
+            merges();
+            removals();
+            if (m_plan.presses() == before) break;
+        }
         m_stage = 4;
         if (m_o.center) center();
         m_stage = 5;
@@ -183,16 +191,22 @@ private:
                     status("removing clicks");
                     advance(m_plan.channel(ch).size() - i, m_plan.channel(ch).size());
                 }
-                const std::pair<int, Tick> key{ch, m_plan.channel(ch)[i].press};
-                // Already failed, and nothing it ran over has changed since.
-                if (auto it = m_dead.find(key); it != m_dead.end() && !changedSince(it->second.second, it->second.first))
-                    continue;
+                const Key key{0, ch, m_plan.channel(ch)[i].press};
+                if (failedBefore(key)) continue;
                 Plan p = m_plan;
                 p.channel(ch).erase(p.channel(ch).begin() + (ptrdiff_t)i);
                 Span tried;
                 if (tryAdopt(p, &tried)) ++m_out.removed;
                 else m_dead[key] = {tried, m_changes.size()};
             }
+    }
+
+    // Edit kind (0 remove, 1 merge with the previous hold), button, press of the hold.
+    using Key = std::tuple<int, int, Tick>;
+    // Already failed, and nothing it ran over has changed since.
+    bool failedBefore(const Key& key) const {
+        auto it = m_dead.find(key);
+        return it != m_dead.end() && !changedSince(it->second.second, it->second.first);
     }
 
     void merges() {
@@ -204,11 +218,15 @@ private:
                     status("merging clicks");
                     advance(m_plan.channel(ch).size() - i, m_plan.channel(ch).size());
                 }
+                const Key key{1, ch, h[i].press};
+                if (failedBefore(key)) continue;
                 Plan p = m_plan;
                 Holds& q = p.channel(ch);
                 q[i - 1].release = q[i].release;
                 q.erase(q.begin() + (ptrdiff_t)i);
-                if (tryAdopt(p)) ++m_out.merged;
+                Span tried;
+                if (tryAdopt(p, &tried)) ++m_out.merged;
+                else m_dead[key] = {tried, m_changes.size()};
             }
     }
 
@@ -249,8 +267,8 @@ private:
                         status("centering timings");
                         advance(done, 2 * m_plan.presses());
                     }
-                    // Three ticks of room each way is comfortable: leave it.
-                    if (fits(ch, i, press, -3) && fits(ch, i, press, +3)) continue;
+                    // Comfortable room each way: leave it.
+                    if (fits(ch, i, press, -m_o.comfort) && fits(ch, i, press, +m_o.comfort)) continue;
                     int early = reach(ch, i, press, -1, m_o.maxShift), late = reach(ch, i, press, +1, m_o.maxShift);
                     lower(before, early + late + 1);
                     int d = (late - early) / 2;
@@ -290,7 +308,7 @@ private:
     KnownStates m_known;
     std::vector<uint64_t> m_rec;
     std::vector<Span> m_changes;   // adopted, in order
-    std::map<std::pair<int, Tick>, std::pair<Span, size_t>> m_dead;   // failed removals, by press
+    std::map<Key, std::pair<Span, size_t>> m_dead;   // failed edits, and the changes made by then
 };
 
 } // namespace

@@ -22,10 +22,12 @@ local scripts listed in `.gitignore`.
 
 ## Build
 
-`./deploy.sh` builds and installs into the local Geode mods folder. It uses the Geode bindings
-pinned at f050fd74 (`../Kairos-bindings`, `GEODE_BINDINGS_REPO_PATH`): newer bindings make
-`GJGameState` non-copyable, which `src/solver/psnap.hpp` needs. After changing the bindings, run
-`python tools/gen_podfields.py` to regenerate `src/kairos/PodFields.inc`.
+`./deploy.sh` builds and installs into the local Geode mods folder; any CMake build (an IDE too)
+works the same. `CMakeLists.txt` pins the Geode bindings at f050fd74: a clone at
+`../Kairos-bindings` if there is one, else downloaded (`GEODE_BINDINGS_REPO_PATH` in the
+environment overrides both). Newer bindings make `GJGameState` non-copyable, which
+`src/solver/psnap.hpp` needs. After changing the bindings, run `python tools/gen_podfields.py` to
+regenerate `src/kairos/PodFields.inc`.
 
 ## Rules
 

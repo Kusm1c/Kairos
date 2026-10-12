@@ -2,8 +2,6 @@
 # Build Kairos and install it into the local Geode mods folder.  ./deploy.sh [--no-install]
 set -u
 cd "$(dirname "$0")"
-# The bindings commit gdsolver's builds use (newer ones made GJGameState non-copyable).
-export GEODE_BINDINGS_REPO_PATH="$(cd .. && pwd -W)/Kairos-bindings"
 MODS="/c/Users/Kusmic/Documents/GeodeModing/geode/mods"
 
 mkdir -p build

@@ -194,7 +194,11 @@ private:
             o.rules = humanRules();
             kpsim::search::findPath(*m_engine, o, m_path);
         } else if (m_request.kind == JobKind::Optimize) {
-            kpsim::search::OptimizeOptions o;
+            const auto goal = Mod::get()->getSettingValue<std::string>("solve-goal");
+            auto o = kpsim::search::optimizeFor(goal == "Fewest inputs" ? kpsim::search::SolveGoal::FewestInputs
+                                                : goal == "Most lenient windows"
+                                                    ? kpsim::search::SolveGoal::LenientWindows
+                                                    : kpsim::search::SolveGoal::Balanced);
             o.maxShift = (int)Mod::get()->getSettingValue<int64_t>("window-max-shift");
             o.rules = humanRules();
             kpsim::search::optimizePlan(*m_engine, m_request.plan, o, m_opt);

@@ -1213,7 +1213,11 @@ struct State {
     // not in keyOf. At the END on purpose (positional State{...}); the padding is spelled out so
     // memcmp over a State (refwatch) never reads indeterminate bytes.
     uint8_t pressAge = 255;
-    uint8_t pressPad[7] = {};
+    uint8_t pressPad0 = 0;
+    // Kairos: --fewpress (search_census.hpp g_fewPress): presses of this lineage, saturating; read
+    // by the goal pick only. Not in keyOf, as tight. 0 whenever the flag is off.
+    uint16_t presses = 0;
+    uint8_t pressPad[4] = {};
 };
 
 // THIS ASSERT IS A QUESTION, NOT A BUDGET. If you added a field and the build
@@ -1321,7 +1325,8 @@ struct State {
 // printed in --seeddump under the flag.
 // [2026-10-12] Kairos: 552 -> 560: pressAge (--minpressgap) and its explicit padding, at the end
 // (no padding was left). It accumulates like edgeAge and, like it, is not seeded: an anchor starts
-// free (255).
+// free (255). presses (--fewpress) took two of those padding bytes: still 560. It accumulates and
+// is not seeded either: a call counts from its own anchor, which is all its goal pick compares.
 constexpr size_t kStateBytes =
     (560u +(size_t)(kTouchBits - 32) * sizeof(uint16_t)
           + (sizeof(TouchMask) - sizeof(uint32_t))

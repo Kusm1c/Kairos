@@ -69,6 +69,9 @@ inline bool g_clearProbe = false;
 // ticks of a 134/144/162/223 span), so the choice inside that range is not
 // load-bearing.
 constexpr double kTightPx = 4.0;
+// Kairos: --tightpx X, the room the route score counts as tight. Larger ranks routes by the room a
+// player has rather than the model's error (the goal pick only, as above).
+inline double g_tightPx = kTightPx;
 
 // Nothing is looked for beyond this; a state with more room than this is
 // simply "clear" and the exact figure would not change any decision.

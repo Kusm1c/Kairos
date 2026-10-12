@@ -590,6 +590,8 @@ inline void noteInput(const State& prev, State& c, int input) {
         c.edgeAge = (input != (int)prev.action) ? 0 : (uint8_t)std::min(254, (int)prev.edgeAge + 1);
     if (g_minPressGap > 1)   // Kairos: --minpressgap
         c.pressAge = (input == 1 && prev.action != 1) ? 0 : (uint8_t)std::min(254, (int)prev.pressAge + 1);
+    if (g_fewPress)   // Kairos: --fewpress
+        c.presses = (uint16_t)std::min(0xffff, (int)prev.presses + (input == 1 && prev.action != 1 ? 1 : 0));
     const auto lat2 = [](uint8_t m) { return m == 1 || m == 3; };
     c.latLock = (lat2(c.mode) && !lat2(prev.mode) && !c.dual) ? 1 : 0;
 }
