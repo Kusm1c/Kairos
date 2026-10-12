@@ -10,6 +10,10 @@
 
 using namespace p1;
 
+// Kairos: the Kairos engine (src/kairos/GameEngine.cpp) is stepping the level for its search; the
+// session's per-update work stays out of it.
+namespace kp { bool engineStepping(); }
+
 // The rest of the player at each entry snapshot, same index as g_snaps (cfg snapplayer): what
 // psnap's byte copy cannot carry -- the containers (the slope map, the touched rings and pads) and
 // the pointers to the objects the player stands on, rides or dashes from -- carried by C++
@@ -719,6 +723,11 @@ class $modify(GJBaseGameLayer) {
     }
 
     void update(float dt) {
+        // Kairos: an update of the Kairos engine is its search's (kp::engineStepping, top).
+        if (kp::engineStepping()) {
+            GJBaseGameLayer::update(dt);
+            return;
+        }
         // Re-entrancy guard. GD's resetLevel calls update internally, so every hook
         // re-entry stacks another fast loop and the stack runs out (0xC00000FD). Nested
         // calls pass through; session bookkeeping, the fast loop and hotkeys belong to

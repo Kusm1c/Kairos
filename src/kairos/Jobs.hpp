@@ -29,6 +29,9 @@ bool watchActive();
 // The human limits of the settings, or none with "Go crazy!".
 kpsim::search::InputRules humanRules();
 
+// Where the plan first needs faster inputs than those limits, and what, in a sentence; "" if never.
+std::string limitBreach(const kpsim::macro::Plan& plan);
+
 // Opens the level and runs the job once it is loaded.
 void startJob(GJGameLevel* level, JobRequest request);
 

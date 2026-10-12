@@ -1,4 +1,5 @@
 #include "ProgressPanel.hpp"
+#include "UiText.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -40,7 +41,7 @@ bool ProgressPanel::init(const std::string& title) {
     this->addChild(edge);
 
     auto* t = CCLabelBMFont::create(title.c_str(), "bigFont.fnt");
-    t->setScale(0.38f);
+    fitLabel(t, m_width * 0.6f, 0.38f, 0.3f);   // the time left keeps the right side
     t->setAnchorPoint({0.f, 0.5f});
     t->setPosition({10.f, kH - 13.f});
     this->addChild(t);
@@ -76,7 +77,7 @@ bool ProgressPanel::init(const std::string& title) {
 
 void ProgressPanel::set(const std::string& status, double fraction, double elapsed, const std::string& detail) {
     m_status->setString(status.c_str());
-    m_status->limitLabelWidth(m_width - 20.f, 0.52f, 0.2f);
+    fitLabel(m_status, m_width - 20.f, 0.52f);
     m_unknown = fraction < 0;
     if (!m_unknown) {
         const double f = std::clamp(fraction, 0.0, 1.0);
@@ -90,6 +91,7 @@ void ProgressPanel::set(const std::string& status, double fraction, double elaps
     m_detail->setString((m_stop ? detail : detail.empty() ? std::string("Esc, then Quit: stop")
                                                       : detail + "   |   Esc, then Quit: stop")
                             .c_str());
+    fitLabel(m_detail, m_width - 20.f, 0.42f, 0.38f);
 }
 
 void ProgressPanel::onStop(std::function<void()> stop) {

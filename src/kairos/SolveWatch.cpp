@@ -1,5 +1,7 @@
-// After a Solve that wrote a solution: optimize it (setting "auto-optimize") or offer to.
+// After a Solve that wrote a solution: optimize it (setting "auto-optimize") or offer to. After one
+// the loop stopped as impossible within the human limits: say where and why.
 #include "Jobs.hpp"
+#include "LimitsPopup.hpp"
 #include "ModGuard.hpp"
 
 #include <Geode/Geode.hpp>
@@ -18,6 +20,7 @@ struct Watch {
     Ref<GJGameLevel> level;
     bool had = false;
     std::filesystem::file_time_type before{};
+    std::string limitStop;   // kp::onLimitStop's reason, shown once the session is over
 } g;
 
 void offer(GJGameLevel* level) {
@@ -45,6 +48,9 @@ void offer(GJGameLevel* level) {
     std::string text = fmt::format("The solver found a solution: {} clicks, shortest press or gap {} ticks.\n"
                                    "Optimize it now? Fewer clicks, human timings, checked by the game.",
                                    req.plan.presses(), shortest == ~0u ? 0u : shortest);
+    // A route found where the limits do not reach (the section solver ignores them).
+    if (const auto breach = limitBreach(req.plan); !breach.empty())
+        text += "\n<cy>Beyond your limits: " + breach + "</c>";
     Loader::get()->queueInMainThread([keep, req, text]() mutable {
         createQuickPopup("Kairos", text, "Later", "Optimize", [keep, req](FLAlertLayer*, bool go) mutable {
             if (go) startJob(keep, std::move(req));
@@ -64,17 +70,26 @@ void poll() {
         }
     }
     if (!driving && g.driving && g.level) {
-        std::error_code ec;
-        auto path = solverSolutionPath(g.level);
-        if (std::filesystem::exists(path, ec) &&
-            (!g.had || std::filesystem::last_write_time(path, ec) > g.before))
-            offer(g.level);
+        if (!g.limitStop.empty()) {
+            const std::string name = g.level->m_levelName, why = g.limitStop;
+            Loader::get()->queueInMainThread([name, why] { showLimitsPopup(name, why); });
+        } else {
+            std::error_code ec;
+            auto path = solverSolutionPath(g.level);
+            if (std::filesystem::exists(path, ec) &&
+                (!g.had || std::filesystem::last_write_time(path, ec) > g.before))
+                offer(g.level);
+        }
+        g.limitStop.clear();
     }
     if (!driving) g.level = nullptr;
     g.driving = driving;
 }
 
 } // namespace
+
+void onLimitStop(const std::string& why) { g.limitStop = why; }
+
 } // namespace kp
 
 class $modify(KairosSolveWatch, CCScheduler) {

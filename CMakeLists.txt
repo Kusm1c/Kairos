@@ -40,6 +40,10 @@ if (GDSOLVER_BUILD_MOD)
     add_library(${PROJECT_NAME} SHARED ${SOURCES})
     # src/mod/*.hpp include each other and the solver/ headers by path from src/
     target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    # Kairos: the mod's sources compile side by side (MSBuild alone only runs projects in parallel).
+    if (MSVC)
+        target_compile_options(${PROJECT_NAME} PRIVATE /MP)
+    endif()
 
     # The mod's DP must behave exactly like the dev CLI -- that equality is an acceptance
     # criterion, not an aspiration -- so the mod does not compile the solver at all. Its first

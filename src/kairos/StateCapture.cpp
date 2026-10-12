@@ -2,6 +2,7 @@
 
 #include "kpsim/engine/PlayerEngine.hpp"
 
+#include <cmath>
 #include <cstring>
 #include <string>
 #include <string_view>
@@ -39,7 +40,7 @@ bool isVolatileField(const char* name) {
     return false;
 }
 
-uint64_t physicsHash(const EngineSnap& s) {
+uint64_t physicsHash(const EngineSnap& s, double grid) {
     static const std::vector<bool> skip = [] {
         std::vector<bool> v;
         kpsim::engine::forEachField(EngineSnap{}, [&](const char* name, double) { v.push_back(isVolatileField(name)); });
@@ -49,6 +50,7 @@ uint64_t physicsHash(const EngineSnap& s) {
     size_t i = 0;
     kpsim::engine::forEachField(s, [&](const char*, double v) {
         if (skip[i++]) return;
+        if (grid > 0) v = std::round(v / grid);
         if (v == 0.0) v = 0.0;   // -0 == +0
         uint64_t bits;
         std::memcpy(&bits, &v, sizeof bits);

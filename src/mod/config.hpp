@@ -363,7 +363,10 @@ struct Config {
     // qualify for the window; such a window is given back to the loop unsearched (hooks_gamelayer).
     // `seccpfallback=1` brings both back (a diagnostic). Off by default since the release decision
     // of 09-30: no section search at prim=cp over the official 22, coins off and on.
-    bool secCpFallback = false;
+    // Kairos: on. A custom level whose window the snapshot lies in (Defeated Circles, 2026-10-12:
+    // the verified plan died at t=532 on psnap where the game flew it to t=1192) is otherwise never
+    // searched exactly; secsolve::g_deadlineSec bounds what that costs.
+    bool secCpFallback = true;
     // cfg `secthrow=<length|alloc|both>@<depth>` (off; a measurement, never a default): the section
     // search throws on purpose on the first step at that depth once the layer holds a child --
     // std::length_error, std::bad_alloc, or (both) the first in the first search that gets there

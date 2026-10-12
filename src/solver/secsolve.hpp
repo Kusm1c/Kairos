@@ -176,7 +176,9 @@ inline int g_spineOff = -1;   // MEASURED: -1 tracks all 60 layers to 0.0499 px;
 // says whether the horizon can be reached at all, and a run that cannot make it
 // is stopped THERE rather than at the deadline. Same information, minutes
 // instead of an hour.
-inline double g_deadlineSec = 0.0;
+// Kairos: 240 s by default -- with the checkpoint fallback on (config.hpp secCpFallback), a window
+// searched on checkpoints took up to 2,318 s in gdsolver's own runs; a snapshot search takes seconds.
+inline double g_deadlineSec = 240.0;
 inline bool g_verify = false;        // cfg `secverify=1`: no search, only check
                                      // restore fidelity
 // cfg `seclog=1`: emit the per-layer breakdown. Whether THE CAP IS BINDING OR

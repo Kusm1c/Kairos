@@ -1,4 +1,5 @@
 #include "StatsPopup.hpp"
+#include "UiText.hpp"
 #include "kpsim/search/WindowFile.hpp"
 
 #include <Geode/Geode.hpp>
@@ -43,9 +44,10 @@ public:
     }
 
 private:
-    CCLabelBMFont* text(const std::string& s, float scale, CCPoint pos, CCPoint anchor = {0.f, 0.5f}) {
+    // `width`: the room the text has, the popup's inner width when 0.
+    CCLabelBMFont* text(const std::string& s, float scale, CCPoint pos, CCPoint anchor = {0.f, 0.5f}, float width = 0.f) {
         auto* l = CCLabelBMFont::create(s.c_str(), "chatFont.fnt");
-        l->setScale(scale);
+        fitLabel(l, width > 0.f ? width : m_mainLayer->getContentSize().width - 32.f, scale);
         l->setAnchorPoint(anchor);
         l->setPosition(pos);
         m_mainLayer->addChild(l);
@@ -60,39 +62,57 @@ private:
         const auto st = kpsim::search::windowStats(r, sigma);
         const bool two = std::any_of(r.edges.begin(), r.edges.end(), [](auto& w) { return w.player == 1; });
 
-        float y = size.height - 48.f;
+        // Top band: what was measured on the left, the buttons on the right. Then the summary at
+        // full width, then the histogram (left) and the list (right) below it.
+        float y = size.height - 46.f;
         const char* outcome = r.base.outcome == kpsim::search::Outcome::Finished ? "finished"
                               : r.base.outcome == kpsim::search::Outcome::Died  ? "died"
                                                                                 : "alive";
         text(fmt::format("{}  -  base run {} at {:.2f} s{}", macro, outcome, r.base.tick / 240.0,
                          r.complete ? "" : "  (partial)"),
+             0.55f, {16.f, y}, {0.f, 0.5f}, size.width - 32.f - (m_practice ? 190.f : 100.f));
+        y -= 18.f;
+        text(fmt::format("{} edges   narrowest {} ticks ({:.1f} ms)   median {} ({:.1f} ms)   {} clicks not needed",
+                         st.edges, st.narrowest, ms(st.narrowest), (int)st.medianWidth, ms(st.medianWidth),
+                         st.removable),
              0.55f, {16.f, y});
         y -= 16.f;
-        text(fmt::format("{} edges   {} frame-perfect   narrowest {} ticks ({:.1f} ms)   median {} ({:.1f} ms)",
-                         st.edges, st.framePerfect, st.narrowest, ms(st.narrowest), (int)st.medianWidth,
-                         ms(st.medianWidth)),
-             0.55f, {16.f, y});
+        auto* perfect = text(fmt::format("Frame-perfect at 60 / 120 / 240 FPS:  {:.0f} / {:.0f} / {}", st.perfectAt[0],
+                                         st.perfectAt[1], st.framePerfect),
+                             0.55f, {16.f, y});
+        perfect->setColor(st.framePerfect ? ccColor3B{255, 150, 90} : ccColor3B{150, 220, 255});
+        if (r.followed) {
+            auto* note = text(fmt::format("{} sides with the next input re-timed", r.followed), 0.45f,
+                              {size.width - 16.f, y}, {1.f, 0.5f}, 160.f);
+            note->setColor({170, 170, 170});
+        }
         y -= 16.f;
-        auto* chance = text(fmt::format("Human success estimate (timing spread {:.0f} ms): {:.1f}%   {} clicks not needed",
-                                        sigma, st.humanChance * 100.0, st.removable),
+        // Comparable with nandl.pages.dev's list.
+        auto* chance = text(st.precision > 0
+                                ? fmt::format("Precision for a 24 h clear: {:.0f} sigma/s (NaNDL scale, {:.1f} ms spread)"
+                                              "   Success at {:.0f} ms: {:.1f}%",
+                                              st.precision, 1000.0 / st.precision, sigma, st.humanChance * 100.0)
+                                : fmt::format("No window under 11 ticks   Success at {:.0f} ms: {:.1f}%", sigma,
+                                              st.humanChance * 100.0),
                             0.55f, {16.f, y});
         chance->setColor(st.humanChance > 0.5 ? ccColor3B{120, 255, 120} : ccColor3B{255, 150, 90});
 
-        // Histogram of window widths.
+        // Histogram of window widths, per tick like NaNDL; scaled on 1..10, 11+ clipped.
+        constexpr int kBars = kpsim::search::kWidthBucketCount;
         const float hx = 22.f, hy = 34.f, hw = 170.f, hh = 130.f;
         text("window width (ticks)", 0.5f, {hx, hy - 20.f});
         size_t top = 1;
-        for (size_t c : st.histogram) top = std::max(top, c);
-        const float bw = hw / 6.f;
-        for (int b = 0; b < 6; ++b) {
-            const float h = std::max(1.f, hh * (float)st.histogram[b] / (float)top);
-            int sample = b == 0 ? 1 : b == 1 ? 3 : b == 2 ? 6 : b == 3 ? 12 : b == 4 ? 24 : 25;
-            auto c = widthColor(sample);
-            auto* bar = CCLayerColor::create({c.r, c.g, c.b, 220}, bw - 6.f, h);
+        for (int b = 0; b + 1 < kBars; ++b) top = std::max(top, st.histogram[b]);
+        const float bw = hw / kBars;
+        for (int b = 0; b < kBars; ++b) {
+            const float h = std::clamp(hh * (float)st.histogram[b] / (float)top, 1.f, hh);
+            auto c = widthColor(b + 1 < kBars ? b + 1 : 25);
+            auto* bar = CCLayerColor::create({c.r, c.g, c.b, 220}, bw - 3.f, h);
             bar->setPosition({hx + b * bw, hy});
             m_mainLayer->addChild(bar);
-            text(kpsim::search::kWidthBuckets[b], 0.45f, {hx + b * bw + (bw - 6.f) / 2, hy - 8.f}, {0.5f, 0.5f});
-            text(std::to_string(st.histogram[b]), 0.45f, {hx + b * bw + (bw - 6.f) / 2, hy + h + 7.f}, {0.5f, 0.5f});
+            const float cx = hx + b * bw + (bw - 3.f) / 2;
+            text(kpsim::search::kWidthBuckets[b], 0.45f, {cx, hy - 8.f}, {0.5f, 0.5f}, bw);
+            text(std::to_string(st.histogram[b]), 0.45f, {cx, hy + h + 7.f}, {0.5f, 0.5f}, bw);
         }
 
         buildList();
@@ -106,8 +126,8 @@ private:
             b->setPosition(pos);
             menu->addChild(b);
         };
-        button("Sort", menu_selector(StatsPopup::onSort), {size.width - 60.f, 232.f});
-        if (m_practice) button("Practice", menu_selector(StatsPopup::onPractice), {size.width - 150.f, 232.f});
+        button("Sort", menu_selector(StatsPopup::onSort), {size.width - 52.f, size.height - 46.f});
+        if (m_practice) button("Practice", menu_selector(StatsPopup::onPractice), {size.width - 138.f, size.height - 46.f});
         return true;
     }
 
@@ -135,7 +155,7 @@ private:
                 return a.early + a.late < b.early + b.late;
             });
         if (edges.size() > kListed) edges.resize(kListed);
-        const CCSize listSize{220.f, 190.f};
+        const CCSize listSize{220.f, 150.f};   // under the summary lines
         auto* scroll = ScrollLayer::create(listSize);
         m_scroll = scroll;
         scroll->setPosition({size.width - listSize.width - 14.f, 16.f});
@@ -158,7 +178,7 @@ private:
                                      side(w.early, w.earlyLimited, true), side(w.late, w.lateLimited, false), width,
                                      more, ms(width), more);
             auto* l = CCLabelBMFont::create(label.c_str(), "chatFont.fnt");
-            l->setScale(0.5f);
+            fitLabel(l, listSize.width - 8.f, 0.5f);
             l->setAnchorPoint({0.f, 0.5f});
             l->setColor(widthColor(width));
             l->setPosition({4.f, contentH - row * ((float)i + 0.5f) - 2.f});
@@ -167,7 +187,8 @@ private:
         scroll->scrollToTop();
         m_caption = text(fmt::format("{} {} of {} edges  {}", m_byTime ? "first" : "tightest", edges.size(), r.edges.size(),
                                      r.cap ? fmt::format("({0}+ / {0}- = {0} or more)", r.cap) : "(+ = range limit)"),
-                         0.45f, {size.width - listSize.width - 14.f, 210.f});
+                         0.45f, {size.width - listSize.width - 14.f, 16.f + listSize.height + 8.f}, {0.f, 0.5f},
+                         listSize.width);
     }
 
     std::function<void()> m_practice;

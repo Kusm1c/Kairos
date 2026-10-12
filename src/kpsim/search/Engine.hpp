@@ -28,7 +28,12 @@ struct Trace {
     const KnownStates* known = nullptr;             // Converged on a match
     Tick knownFrom = 0;                             // inputs equal the known runs' after this tick
     const std::vector<uint64_t>* expect = nullptr;  // Diverged on a mismatch
+    // The same, with the state on a kNearGrid grid: back on a known run, not exactly on it.
+    std::vector<uint64_t>* nearRecord = nullptr;
+    const KnownStates* nearKnown = nullptr;
 };
+
+constexpr double kNearGrid = 1.0 / 1024;   // units
 
 struct RunResult {
     Outcome outcome = Outcome::Reached;

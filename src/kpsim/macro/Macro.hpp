@@ -29,6 +29,13 @@ struct Plan {
     bool anyHeldAt(Tick t) const { return heldAt(t, 0) || heldAt(t, 1); }
     Tick lastEdge() const;
     size_t presses() const { return holds.size() + holds2.size(); }
+    // Presses and releases.
+    size_t inputs() const {
+        size_t n = presses();
+        for (const Holds* h : {&holds, &holds2})
+            for (const auto& x : *h) n += x.release != kNever;
+        return n;
+    }
     // Sorts and merges overlapping or touching holds.
     void normalize();
     bool valid() const;

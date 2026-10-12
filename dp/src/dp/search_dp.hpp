@@ -251,10 +251,10 @@ struct CurrentRules {
                && (!coinOn || s.coins == (uint8_t)coinAll);
     }
     // Of two states that reached it, is the one with route score `cand` to replace `held`?
-    // Kairos: the score `prefer` compares, the route score alone unless --fewpress puts the presses
-    // first (lower is better either way).
+    // Kairos: the score `prefer` compares, the route score alone unless --fewpress puts the inputs
+    // (presses and releases) first (lower is better either way).
     uint32_t routeScore(const State& s) const {
-        return g_fewPress ? ((uint32_t)s.presses << 16 | s.tight) : (uint32_t)s.tight;
+        return g_fewPress ? ((uint32_t)s.inputs << 16 | s.tight) : (uint32_t)s.tight;
     }
     bool prefer(uint32_t cand, uint32_t held) const { return cand < held; }
     // How good `s` is, for a search that ranks states (the beam): more coins first under --coins,
@@ -1043,6 +1043,12 @@ inline int searchLayers(E& e, const Rules& rules, SearchResult& out) {
                     sl.lo = (int)nxt.size() - 1;
                 }
                 finish(nxt[(size_t)sl.lo]);
+            } else if (g_fewPress) {
+                // Kairos: --fewpress, at the same vy the state with fewer inputs takes the slot
+                // (phase 2p does the same).
+                const int slot = s.vy >= nxt[(size_t)sl.hi].vy - 1e-9 ? sl.hi
+                                 : s.vy <= nxt[(size_t)sl.lo].vy + 1e-9 ? sl.lo : -1;
+                if (slot >= 0 && s.inputs < nxt[(size_t)slot].inputs) finish(nxt[(size_t)slot]);
             }
         };
 
@@ -1441,7 +1447,7 @@ inline int searchLayers(E& e, const Rules& rules, SearchResult& out) {
                         k.s.pressAge = (p.action != 1)
                                            ? 0 : (uint8_t)std::min(254, (int)p.pressAge + 1);
                     if (g_fewPress)   // Kairos: --fewpress
-                        k.s.presses = (uint16_t)std::min(0xffff, (int)p.presses + (p.action != 1 ? 1 : 0));
+                        k.s.inputs = (uint16_t)std::min(0xffff, (int)p.inputs + (p.action != 1 ? 1 : 0));
                     if (g_heldAll) {
                         k.s.held = 1;
                         k.s.jumpBuf = 1;
@@ -1636,6 +1642,24 @@ inline int searchLayers(E& e, const Rules& rules, SearchResult& out) {
                             r.loIdx = i;
                             r.loVy = vy;
                             accepted = true;
+                        } else if (g_fewPress) {
+                            // Kairos: --fewpress, emit()'s same-vy rule. One slot so far: both reps.
+                            const uint16_t in = kids[i].s.inputs;
+                            if ((double)vy >= (double)r.hiVy - 1e-9) {
+                                if (in < kids[r.hiIdx].s.inputs) {
+                                    if (r.bOrd == kNone) { r.loIdx = i; r.loVy = vy; }
+                                    r.hiIdx = i;
+                                    r.hiVy = vy;
+                                    accepted = true;
+                                }
+                            } else if ((double)vy <= (double)r.loVy + 1e-9) {
+                                if (in < kids[r.loIdx].s.inputs) {
+                                    if (r.bOrd == kNone) { r.hiIdx = i; r.hiVy = vy; }
+                                    r.loIdx = i;
+                                    r.loVy = vy;
+                                    accepted = true;
+                                }
+                            }
                         }
                     }
                     // Same test as the serial path (rules.reached): keep the

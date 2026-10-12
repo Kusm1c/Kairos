@@ -11,7 +11,10 @@ struct OptimizeOptions {
     int maxShift = 20;     // how far an edge's window is measured
     bool center = true;
     int comfort = 3;       // an edge with this much room each way is left where it is
-    int rounds = 1;        // more merge/remove rounds while clicks keep going
+    int rounds = 1;        // more merge/remove rounds while inputs keep going
+    bool holdToEnd = false;   // also try holding the last press to the end (one input less)
+    bool transfers = false;   // also drop a hold or a gap by giving its ticks to a neighbour (wave, ship)
+    int retries = 6;       // changes the final replay refuses, dropped one at a time
     InputRules rules;      // minPress / minRelease kept by every change, and enforced first
 };
 
@@ -23,6 +26,8 @@ inline OptimizeOptions optimizeFor(SolveGoal goal) {
     if (goal == SolveGoal::FewestInputs) {
         o.mergeGap = 240;
         o.rounds = 4;
+        o.holdToEnd = true;
+        o.transfers = true;
     } else if (goal == SolveGoal::LenientWindows) {
         o.comfort = 6;
     }
@@ -31,8 +36,9 @@ inline OptimizeOptions optimizeFor(SolveGoal goal) {
 
 struct OptimizeResult {
     Plan plan;
-    size_t clicksBefore = 0;
+    size_t clicksBefore = 0, inputsBefore = 0;
     size_t removed = 0, merged = 0, centered = 0;
+    size_t rejected = 0;     // changes the final replay refused, dropped
     size_t humanized = 0;    // too short presses or gaps fixed
     size_t violations = 0;   // still too short at the end
     int narrowestBefore = -1, narrowestAfter = -1;   // ticks; -1: every timing had comfortable room

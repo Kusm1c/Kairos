@@ -16,6 +16,9 @@ namespace kp {
 
 GameEngine* GameEngine::s_active = nullptr;
 
+bool engineResetting() { return GameEngine::active() && GameEngine::active()->ownReset(); }
+bool engineStepping() { return GameEngine::active() && !GameEngine::active()->frozen(); }
+
 namespace {
 
 constexpr Tick kChunk = 240;
@@ -67,6 +70,7 @@ void GameEngine::resetLayer() {
 }
 
 void GameEngine::reset() {
+    FiberTask::yieldIfDue();
     checkCancel();
     m_layer->m_checkpointArray->removeAllObjects();
     resetLayer();
@@ -99,6 +103,7 @@ int GameEngine::save() {
 }
 
 bool GameEngine::restore(int id) {
+    FiberTask::yieldIfDue();   // long: the frame first if it is due
     checkCancel();
     auto it = m_saves.find(id);
     if (it == m_saves.end()) return false;
@@ -164,7 +169,7 @@ RunResult GameEngine::run(const Plan& plan, Tick until, const Trace* trace) {
     // The game kept stepping after an early stop: restore first.
     if (m_stop == Outcome::Converged || m_stop == Outcome::Diverged)
         throw kpsim::search::EngineError("internal: run after an early stop");
-    const bool mayStop = trace && (trace->known || trace->expect);
+    const bool mayStop = trace && (trace->known || trace->expect || trace->nearKnown);
     Tick chunk = m_stepsPerUpdate ? m_stepsPerUpdate : mayStop ? kFirstChunk : kChunk;
     while (m_stop == Outcome::Reached && m_tick < until) {
         advance(std::min(until - m_tick, chunk));
@@ -207,7 +212,10 @@ void GameEngine::onStep(GJBaseGameLayer* layer) {
 // Seen at the head of the next step, the same point in every run.
 void GameEngine::observe() {
     if (!m_trace || m_tick == 0) return;
-    const uint64_t h = stateHash();
+    kpsim::engine::EngineSnap a, b;
+    captureEngineSnap(m_layer->m_player1, a);
+    captureEngineSnap(m_layer->m_player2, b);
+    const uint64_t h = mix(physicsHash(a), physicsHash(b));
     if (auto* rec = m_trace->record) {
         if (rec->size() < m_tick) rec->resize(m_tick, 0);
         (*rec)[m_tick - 1] = h;
@@ -223,6 +231,21 @@ void GameEngine::observe() {
     if (auto* known = m_trace->known; known && m_tick >= m_trace->knownFrom) {
         auto it = known->find(kpsim::search::stateKey(m_tick, h));
         if (it != known->end()) {
+            m_stop = Outcome::Converged;
+            m_stopTick = m_tick;
+            m_stopEnd = it->second;
+            return;
+        }
+    }
+    if (!m_trace->nearRecord && !m_trace->nearKnown) return;
+    const uint64_t n = mix(physicsHash(a, kpsim::search::kNearGrid), physicsHash(b, kpsim::search::kNearGrid));
+    if (auto* rec = m_trace->nearRecord) {
+        if (rec->size() < m_tick) rec->resize(m_tick, 0);
+        (*rec)[m_tick - 1] = n;
+    }
+    if (auto* nearKnown = m_trace->nearKnown; nearKnown && m_tick >= m_trace->knownFrom) {
+        auto it = nearKnown->find(kpsim::search::stateKey(m_tick, n));
+        if (it != nearKnown->end()) {
             m_stop = Outcome::Converged;
             m_stopTick = m_tick;
             m_stopEnd = it->second;

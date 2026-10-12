@@ -7,19 +7,38 @@
 
 namespace kpsim::search {
 
-const char* const kWidthBuckets[6] = {"1", "2-3", "4-6", "7-12", "13-24", "25+"};
+const char* const kWidthBuckets[kWidthBucketCount] = {"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11+"};
 
-int widthBucket(int w) {
-    if (w <= 1) return 0;
-    if (w <= 3) return 1;
-    if (w <= 6) return 2;
-    if (w <= 12) return 3;
-    if (w <= 24) return 4;
-    return 5;
-}
+int widthBucket(int w) { return std::clamp(w, 1, kWidthBucketCount) - 1; }
 
 namespace {
+
 double phi(double x) { return 0.5 * std::erfc(-x / std::sqrt(2.0)); }
+
+// nandl.pages.dev base model: error N(0, 1/L s) at the window centre, over 10 ticks always fine.
+double nandlPrecision(std::vector<std::pair<double, int>> inputs) {   // (seconds, width)
+    std::sort(inputs.begin(), inputs.end());
+    if (std::none_of(inputs.begin(), inputs.end(), [](auto& i) { return i.second <= 10; })) return 0;
+    auto clearTime = [&](double L) {
+        double attempt = 0, reach = 1;
+        for (auto [t, width] : inputs) {
+            const double p = width > 10 ? 1.0 : std::erf(width / 2.0 * L / 240.0 / std::sqrt(2.0));
+            attempt += t * reach * (1 - p);
+            reach *= p;
+        }
+        attempt += inputs.back().first * reach;
+        return reach > 0 ? attempt / reach : INFINITY;
+    };
+    constexpr double kDay = 86400;
+    double lo = 0, hi = 100;
+    while (clearTime(hi) > kDay && hi < 1e9) hi *= 2;
+    for (int i = 0; i < 100; ++i) {
+        const double mid = (lo + hi) / 2;
+        (clearTime(mid) > kDay ? lo : hi) = mid;
+    }
+    return hi;
+}
+
 } // namespace
 
 WindowStats windowStats(const WindowReport& r, double sigmaMs) {
@@ -29,12 +48,19 @@ WindowStats windowStats(const WindowReport& r, double sigmaMs) {
         for (bool b : v) s.removable += b;
     if (r.edges.empty()) return s;
     std::vector<int> widths;
+    std::vector<std::pair<double, int>> timed;
     const double sigma = std::max(1e-6, sigmaMs * 240.0 / 1000.0);   // in ticks
     double chance = 1.0;
     for (const auto& w : r.edges) {
         int width = w.early + w.late + 1;
         widths.push_back(width);
+        timed.push_back({w.tick / 240.0, width});
         s.framePerfect += width == 1;
+        // A single frame (k ticks) fits: always up to k, below 2k for some phases.
+        for (int f = 0; f < 3; ++f) {
+            const int k = 4 >> f;
+            s.perfectAt[f] += width <= k ? 1.0 : width < 2 * k ? (double)(2 * k - width) / k : 0.0;
+        }
         ++s.histogram[widthBucket(width)];
         // Off by k ticks with k the rounded error: fine while -early <= k <= late.
         chance *= phi((w.late + 0.5) / sigma) - phi(-(w.early + 0.5) / sigma);
@@ -43,17 +69,19 @@ WindowStats windowStats(const WindowReport& r, double sigmaMs) {
     s.narrowest = widths.front();
     s.medianWidth = widths[widths.size() / 2];
     s.humanChance = chance;
+    s.precision = nandlPrecision(std::move(timed));
     return s;
 }
 
 std::string writeWindowFile(const WindowReport& r, const std::string& macro, uint64_t plan) {
     std::ostringstream o;
-    o << "kairos-windows 1\n";
+    o << "kairos-windows 2\n";
     o << "plan " << plan << "\n";
     o << "macro " << macro << "\n";
     o << "base " << (int)r.base.outcome << " " << r.base.tick << "\n";
     o << "trials " << r.trials << " " << r.pruned << " " << (r.complete ? 1 : 0) << "\n";
     if (r.cap) o << "cap " << r.cap << "\n";
+    o << "followed " << r.followed << "\n";
     for (const auto& w : r.edges)
         o << "edge " << w.player << " " << w.hold << " " << (w.press ? 1 : 0) << " " << w.tick << " " << w.early << " "
           << w.late << " " << (w.earlyLimited ? 1 : 0) << " " << (w.lateLimited ? 1 : 0) << "\n";
@@ -68,7 +96,7 @@ bool readWindowFile(const std::string& text, WindowReport& r, std::string& macro
     plan = 0;
     std::istringstream in(text);
     std::string line, tag;
-    if (!std::getline(in, line) || line.rfind("kairos-windows", 0) != 0) return false;
+    if (!std::getline(in, line) || line.rfind("kairos-windows 2", 0) != 0) return false;
     while (std::getline(in, line)) {
         std::istringstream l(line);
         l >> tag;
@@ -86,6 +114,8 @@ bool readWindowFile(const std::string& text, WindowReport& r, std::string& macro
             r.complete = complete;
         } else if (tag == "cap") {
             l >> r.cap;
+        } else if (tag == "followed") {
+            l >> r.followed;
         } else if (tag == "edge") {
             EdgeWindow w;
             int press, el, ll;

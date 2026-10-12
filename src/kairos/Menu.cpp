@@ -1,5 +1,6 @@
 #include "Jobs.hpp"
 #include "StatsPopup.hpp"
+#include "UiText.hpp"
 #include <functional>
 #include <optional>
 #include "kpsim/search/WindowFile.hpp"
@@ -93,10 +94,14 @@ bool hasSolution(GJGameLevel* level) {
     return std::filesystem::exists(kp::solverSolutionPath(level)) || std::filesystem::exists(kp::solutionPath(level));
 }
 
-// One line about the level's solution: how many clicks, how human, how tight.
-std::pair<std::string, ccColor3B> solutionInfo(GJGameLevel* level) {
+// Two lines about the level's solution: how much input, then how human and how tight.
+struct SolutionInfo {
+    std::string inputs, timing;
+    ccColor3B color;   // the second line: yellow while Optimize has work to do
+};
+SolutionInfo solutionInfo(GJGameLevel* level) {
     kp::JobRequest req;
-    if (!loadSolution(level, req, true)) return {"The solution cannot be read.", {255, 120, 90}};
+    if (!loadSolution(level, req, true)) return {"The solution cannot be read.", "", {255, 120, 90}};
     const auto& plan = req.merged.presses() ? req.merged : req.plan;
     unsigned shortest = ~0u, interval = ~0u;
     for (int ch = 0; ch < 2; ++ch) {
@@ -107,16 +112,19 @@ std::pair<std::string, ccColor3B> solutionInfo(GJGameLevel* level) {
             if (i) interval = std::min(interval, h[i].press - h[i - 1].press);
         }
     }
-    std::string text = fmt::format("{} clicks   shortest press/gap {} ticks", plan.presses(),
-                                   shortest == ~0u ? 0u : shortest);
-    if (interval != ~0u && interval) text += fmt::format("   up to {:.0f} CPS", 240.0 / interval);
+    SolutionInfo info;
+    info.inputs = fmt::format("{} clicks  |  {} inputs", plan.presses(), plan.inputs());
+    if (interval != ~0u && interval) info.inputs += fmt::format("  |  up to {:.0f} CPS", 240.0 / interval);
+    info.timing = fmt::format("shortest press/gap {} ticks", shortest == ~0u ? 0u : shortest);
     auto windows = kp::windowsFor(level, req.plan);
     if (!windows.edges.empty()) {
         auto st = kpsim::search::windowStats(windows, (double)Mod::get()->getSettingValue<int64_t>("human-sigma-ms"));
-        text += fmt::format("   narrowest window {} ticks   human {:.0f}%", st.narrowest, st.humanChance * 100.0);
+        info.timing += fmt::format("  |  narrowest window {}  |  human {:.0f}%", st.narrowest, st.humanChance * 100.0);
     }
-    if (!kp::humanRules().allows(plan)) return {text + "   -> Optimize", {255, 210, 90}};
-    return {text, {140, 255, 140}};
+    const bool raw = !kp::humanRules().allows(plan);
+    if (raw) info.timing += "  |  -> Optimize";
+    info.color = raw ? ccColor3B{255, 210, 90} : ccColor3B{140, 255, 140};
+    return info;
 }
 
 
@@ -162,14 +170,17 @@ protected:
         };
         float y = size.height - 52.f;
         if (hasSolution(level)) {
-            auto [text, color] = solutionInfo(level);
-            auto* info = CCLabelBMFont::create(text.c_str(), "chatFont.fnt");
-            info->setScale(0.55f);
-            info->limitLabelWidth(size.width - 24.f, 0.55f, 0.2f);
-            info->setColor(color);
-            info->setPosition(size.width / 2.f, size.height - 40.f);
-            m_mainLayer->addChild(info);
-            y -= 12.f;
+            const auto info = solutionInfo(level);
+            auto line = [&](const std::string& text, float at, ccColor3B color) {
+                auto* l = CCLabelBMFont::create(text.c_str(), "chatFont.fnt");
+                kp::fitLabel(l, size.width - 30.f, 0.55f);
+                l->setColor(color);
+                l->setPosition(size.width / 2.f, at);
+                m_mainLayer->addChild(l);
+            };
+            line(info.inputs, size.height - 38.f, {235, 235, 235});
+            if (!info.timing.empty()) line(info.timing, size.height - 51.f, info.color);
+            y -= 24.f;
             heading("Solution", y);
             row(y - 24.f, 0.42f, {{"Rhythm", "GJ_button_01.png", menu_selector(KairosPopup::onRhythmSolution)},
                                   {"Optimize", "GJ_button_01.png", menu_selector(KairosPopup::onOptimize)},
@@ -269,7 +280,8 @@ protected:
                 kp::startJob(level, std::move(req));
             };
         if (!kp::showWindowStatsFile(kp::statsPath(m_level), practice))
-            FLAlertLayer::create("Kairos", "Cannot read the last frame windows.", "OK")->show();
+            FLAlertLayer::create("Kairos", "These frame windows were measured by an older Kairos. Run <cy>Windows</c> again.",
+                                 "OK")->show();
     }
     void onFolder(CCObject*) {
         std::error_code ec;
@@ -294,7 +306,7 @@ CCMenuItemSpriteExtra* menuButton(CCObject* target, SEL_MenuHandler sel, GJGameL
     auto sprite = CCSprite::createWithSpriteFrameName("GJ_plainBtn_001.png");
     auto label = CCLabelBMFont::create("K", "bigFont.fnt");
     label->setScale(0.5f);
-    if (level && hasSolution(level)) label->setColor(solutionInfo(level).second);
+    if (level && hasSolution(level)) label->setColor(solutionInfo(level).color);
     label->setPosition(sprite->getContentSize() / 2);
     sprite->addChild(label);
     sprite->setScale(0.85f);

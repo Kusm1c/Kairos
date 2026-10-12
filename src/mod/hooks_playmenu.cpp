@@ -1,6 +1,8 @@
 // The play menu: the popup a level's play button opens, where the session's mode is chosen.
 #include "mod/playlayer_helpers.hpp"
 #include "mod/level_warnings.hpp"
+#include "kairos/LevelCheckPopup.hpp"   // Kairos: the menu's notes behind (i)
+#include "kairos/UiText.hpp"
 #include <Geode/modify/LevelInfoLayer.hpp>
 #include <Geode/modify/LevelPage.hpp>
 #include <Geode/modify/EditLevelLayer.hpp>
@@ -55,7 +57,21 @@ struct LevelFacts {
     // Reads the attempt count or keeps items across attempts, and the attempt pin is on
     // (g_attemptOne): solved as its first attempt, a yellow note rather than a red one.
     bool attempts = false;
+    std::vector<levelwarn::Note> notes;   // Kairos: the Follow Player Y found (scan)
 };
+
+// Kairos: can an object of this id touch the player? Asked of the game itself (its type), once per
+// id: not a decoration (7) nor a trigger (20), the rule the moving-geometry recording applies
+// (solver/grouptrace.hpp). An id the game cannot make counts, so a doubt keeps the warning.
+inline bool collidesInGame(int id) {
+    static std::unordered_map<int, bool> known;
+    if (auto it = known.find(id); it != known.end()) return it->second;
+    bool hits = true;
+    if (auto* o = GameObject::createWithKey(id))
+        hits = o->m_objectType != GameObjectType::Decoration && o->m_objectType != GameObjectType::Modifier;
+    known[id] = hits;
+    return hits;
+}
 
 // The key's value in a "k,v,k,v" run, or empty.
 inline std::string_view valueOf(std::string_view kv, std::string_view key) {
@@ -132,7 +148,8 @@ inline LevelFacts readLevel(GJGameLevel* level, bool mainLevel) {
         if (!f.random && isRandomObject(obj, id)) f.random = true;
         pos = end;
     }
-    const auto w = levelwarn::scan(all, f.platformer);
+    const auto w = levelwarn::scan(all, f.platformer, collidesInGame);   // Kairos: types asked of the game
+    f.notes = w.notes;
     f.unmodelled = w.unmodelled;
     f.newer = w.newer;
     f.newerIds = levelwarn::newerSummary(w);
@@ -321,13 +338,12 @@ protected:
     int m_search = UI_SEARCH_DP;
     CCMenuItemSpriteExtra* m_optBtn = nullptr;
     cocos2d::CCLabelBMFont* m_note = nullptr;
-    cocos2d::CCLabelBMFont* m_rngNote = nullptr;
-    cocos2d::CCLabelBMFont* m_redNote = nullptr;
-    cocos2d::CCLabelBMFont* m_yellowNote = nullptr;
-    cocos2d::CCLabelBMFont* m_attemptNote = nullptr;
-    cocos2d::CCLabelBMFont* m_versionNote = nullptr;
-    cocos2d::CCLabelBMFont* m_glitchNote = nullptr;
-    cocos2d::CCLabelBMFont* m_searchNote = nullptr;
+    // Kairos: one status line for every note -- a dot, the most severe note in a few words, and
+    // (i) for all of them with why (kairos/LevelCheckPopup) -- instead of a stack of sentences.
+    cocos2d::CCDrawNode* m_statusDot = nullptr;
+    cocos2d::CCLabelBMFont* m_statusLabel = nullptr;
+    CCMenuItemSpriteExtra* m_infoBtn = nullptr;
+    std::vector<levelwarn::Note> m_rows;
     int m_levelId = 0;
     ButtonSprite* m_startSpr = nullptr;
     CCMenuItemSpriteExtra* m_startBtn = nullptr;
@@ -346,10 +362,12 @@ protected:
     // 2026-10-01); the mod setting solve-gamble still sets it, on the settings page.
     // Even so the popup can be taller than the screen -- GD's design height is 320 -- so
     // shrinkToFit scales it down to fit.
+    // Kairos: the notes are one status line now (m_statusLabel), so the popup has one height.
     static constexpr float kW = 340.f, kH = 260.f;
     static constexpr float kModeY = -88.f, kDescY = -128.f, kCoinY = -164.f;   // from the top edge
     static constexpr float kNoteY = 64.f, kStartY = 32.f;   // from the bottom edge
-    static constexpr float kNoteRow = 14.f;   // the level's notes stack up from the bot note
+    static constexpr float kNoteRow = 14.f;
+    static constexpr float kStatusY = kNoteY + kNoteRow + 4.f;   // Kairos: the status line
 
     static std::string modVersion() { return Mod::get()->getVersion().toVString(); }
 
@@ -365,38 +383,101 @@ protected:
         return v.empty() ? std::string("an earlier version") : v;
     }
 
-    // The most notes the menu can show at once: the random-number line, and either red and
-    // yellow (no stored solution for the Coins choice) or the version line (one stored by another
-    // version).
-    int noteCount() const {
-        const int unsolved = (m_facts.unmodelled ? 1 : 0)
-                             + (m_facts.newer && !m_facts.official ? 1 : 0)
-                             + (m_facts.attempts ? 1 : 0);
-        const int solved = (!olderSolve(false).empty()
-                            || (m_facts.coins > 0 && !olderSolve(true).empty())) ? 1 : 0;
-        // ...and a row kept for each warning Options can raise (Avoid glitches, an experimental
-        // search), which come and go with the choices.
-        return std::max(unsolved, solved) + (m_facts.random ? 1 : 0) + 2;
+    // Kairos: every note for the current choices, as the Level check lists them. Red: what the
+    // model cannot express; yellow: newer objects, attempts, another version, experiments; blue:
+    // facts; green: found and harmless. The level's own notes only matter while no solution is
+    // stored for the Coins choice: one that is stored was solvable.
+    std::vector<levelwarn::Note> currentNotes(bool solved, const std::string& older) const {
+        using levelwarn::Severity;
+        std::vector<levelwarn::Note> v;
+        if (!solved) {
+            v = m_facts.notes;
+            for (auto& n : levelwarn::bitNotes(m_facts.unmodelled)) v.push_back(n);
+            if (m_facts.newer && !m_facts.official)
+                v.push_back({Severity::Caution, "Objects from 2.0 on",
+                             "The solver is still being matched to the game on these: slower, and it "
+                             "may not be solved. Found: " + m_facts.newerIds + "."});
+            if (m_facts.attempts)
+                v.push_back({Severity::Caution, "Changes from attempt to attempt",
+                             "The bot takes it as its first attempt, so a level that opens only after "
+                             "dying will not be solved."});
+        }
+        if (!older.empty())
+            v.push_back({Severity::Caution, "Solved with " + older,
+                         "Solving it again with " + modVersion() + " may not succeed."});
+        if (m_mode == UI_MODE_SOLVE && m_glitch)
+            v.push_back({Severity::Caution, "Avoid glitches is on",
+                         "Experimental: the level is more likely not to be solved."});
+        if (m_mode == UI_MODE_SOLVE && m_search != UI_SEARCH_DP)
+            v.push_back({Severity::Bad, std::string("Search: ") + uiSearchName(m_search),
+                         "Experimental: the level is more likely not to be solved."});
+        if (m_facts.random)
+            v.push_back({Severity::Info, "Random numbers fixed",
+                         "Fixed while the bot drives, so a replay outside the mod may go differently."});
+        // The human limits the solve keeps (not with Go crazy!), and what happens when they are too
+        // tight for the level (repair.hpp, the Kairos limits test).
+        if (m_mode == UI_MODE_SOLVE && !Mod::get()->getSettingValue<bool>("go-crazy")) {
+            const int64_t pulse = Mod::get()->getSettingValue<int64_t>("human-min-pulse");
+            const int64_t cps = Mod::get()->getSettingValue<int64_t>("max-cps");
+            v.push_back({Severity::Info, "Human limits on",
+                         "Presses and gaps of at least " + std::to_string(pulse) + " ticks"
+                             + (cps > 0 ? ", at most " + std::to_string(cps) + " clicks a second" : std::string())
+                             + ". If the level needs faster inputs, Solve stops and says where."});
+        }
+        return v;
     }
 
-    cocos2d::CCLabelBMFont* makeNote(const std::string& text, const cocos2d::ccColor3B& color,
-                                     const char* id) {
-        using namespace cocos2d;
-        auto* l = CCLabelBMFont::create(text.c_str(), "chatFont.fnt");
-        l->setScale(.55f);
-        geode::cocos::limitNodeWidth(l, kW - 30.f, .55f, .3f);
-        l->setColor(color);
-        l->setID(id);
-        m_mainLayer->addChildAtPosition(l, Anchor::Bottom, ccp(0, kNoteY + kNoteRow));
-        return l;
+    // Kairos: the status line from the notes -- the worst of them in a few words, "+N" for the
+    // rest of that colour -- laid out as one centred group: dot, text, (i).
+    void updateStatus(bool bot) {
+        using levelwarn::Severity;
+        const bool solve = m_mode == UI_MODE_SOLVE;
+        Severity worst = Severity::Fine;
+        for (const auto& n : m_rows) worst = std::min(worst, n.severity);
+        std::string text;
+        if (worst == Severity::Bad || worst == Severity::Caution) {
+            const auto first = std::find_if(m_rows.begin(), m_rows.end(),
+                                            [&](const auto& n) { return n.severity == worst; });
+            const auto same = std::count_if(m_rows.begin(), m_rows.end(),
+                                            [&](const auto& n) { return n.severity == worst; });
+            text = std::string(worst == Severity::Bad ? "Not modelled: " : "Partly modelled: ") + first->title
+                   + (same > 1 ? "  +" + std::to_string(same - 1) : "");
+        } else if (solve) {
+            text = "Fully modelled";
+            worst = Severity::Fine;
+        } else if (worst == Severity::Info) {
+            text = std::find_if(m_rows.begin(), m_rows.end(),
+                                [](const auto& n) { return n.severity == Severity::Info; })->title;
+        }
+        const bool show = bot && !text.empty();
+        m_statusDot->setVisible(show);
+        m_statusLabel->setVisible(show);
+        m_infoBtn->setVisible(show && !m_rows.empty());
+        m_infoBtn->setEnabled(show && !m_rows.empty());
+        if (!show) return;
+        m_statusLabel->setString(text.c_str());
+        kp::fitLabel(m_statusLabel, kW - 90.f, .62f, .5f);
+        const auto c = kp::severityColor(worst);
+        m_statusLabel->setColor(c);
+        m_statusDot->clear();
+        m_statusDot->drawDot({0.f, 0.f}, 3.5f, {c.r / 255.f, c.g / 255.f, c.b / 255.f, 1.f});
+        const float dotW = 7.f, gap = 6.f, btnW = m_rows.empty() ? 0.f : 16.f;
+        const float labelW = m_statusLabel->getScaledContentWidth();
+        const float total = dotW + gap + labelW + (btnW > 0.f ? gap + btnW : 0.f);
+        const float left = -total / 2.f;
+        m_statusDot->updateAnchoredPosition(Anchor::Bottom, ccp(left + dotW / 2.f, kStatusY));
+        m_statusLabel->updateAnchoredPosition(Anchor::Bottom, ccp(left + dotW + gap, kStatusY));
+        m_infoBtn->updateAnchoredPosition(Anchor::Bottom,
+                                          ccp(left + dotW + gap + labelW + gap + btnW / 2.f, kStatusY));
     }
+
+    void onLevelCheck(CCObject*) { kp::showLevelCheck(std::string(m_level->m_levelName), m_rows); }
 
     bool init(GJGameLevel* level, LevelFacts facts, std::function<void()> play) {
         using namespace cocos2d;
         m_facts = facts;
         m_levelId = level->m_levelID.value();
-        if (!geode::Popup::init(kW, kH + kNoteRow * (float)std::max(0, noteCount() - 1)))
-            return false;
+        if (!geode::Popup::init(kW, kH + kNoteRow)) return false;   // Kairos: one height
         // ...and the stored solutions the version line is decided from.
         auto solution = [this](bool coins) -> std::string {
             const std::string path = uiSolutionPath(m_levelId, coins);
@@ -502,29 +583,22 @@ protected:
         m_note->setOpacity(150);
         m_note->setID("bot-note"_spr);
         m_mainLayer->addChildAtPosition(m_note, Anchor::Bottom, ccp(0, kNoteY));
-        m_rngNote = makeNote("This level uses random numbers: fixed while the bot drives.",
-                             kInfoBlue, "random-note"_spr);
-        // What the model cannot express, named (red); and, on a custom level, objects from 2.0 on
-        // (yellow). Neither refuses the run: see level_warnings.hpp.
-        m_redNote = makeNote("Not modelled by the solver: " + levelwarn::describe(m_facts.unmodelled)
-                                 + ". Unlikely to be solved.",
-                             kWarnRed, "unmodelled-note"_spr);
-        m_yellowNote = makeNote("It uses objects from 2.0 on, where the solver is still being "
-                                "matched to the game: slower, and it may not be solved.",
-                                kWarnYellow, "newer-objects-note"_spr);
-        m_attemptNote = makeNote("It changes from attempt to attempt: the bot takes it as its "
-                                 "first attempt, so a level that opens only after dying will not "
-                                 "be solved.",
-                                 kWarnYellow, "attempt-note"_spr);
-        // A level already solved needs neither; solving it again with another version than the one
-        // that did may still fail, and that is said instead (refresh fills it in).
-        m_versionNote = makeNote("", kWarnYellow, "solved-version-note"_spr);
-        // Avoid glitches narrows the search on purpose, so it can lose the only route there is.
-        m_glitchNote = makeNote("Avoid glitches is experimental: the level is more likely "
-                                "not to be solved.",
-                                kWarnYellow, "glitch-note"_spr);
-        // A search other than the DP is an experiment, and said so in red (refresh names it).
-        m_searchNote = makeNote("", kWarnRed, "search-note"_spr);
+        // Kairos: the level's notes, the version line and the experiments' warnings are one status
+        // line with (i) (updateStatus, refresh); what each says is in the Level check.
+        m_statusDot = CCDrawNode::create();
+        m_statusDot->setID("status-dot"_spr);
+        m_mainLayer->addChildAtPosition(m_statusDot, Anchor::Bottom, ccp(0, kStatusY));
+        m_statusLabel = CCLabelBMFont::create("", "chatFont.fnt");
+        m_statusLabel->setAnchorPoint({0.f, .5f});
+        m_statusLabel->setID("status-label"_spr);
+        m_mainLayer->addChildAtPosition(m_statusLabel, Anchor::Bottom, ccp(0, kStatusY));
+        {
+            auto* spr = CCSprite::createWithSpriteFrameName("GJ_infoIcon_001.png");
+            spr->setScale(.55f);
+            m_infoBtn = CCMenuItemSpriteExtra::create(spr, this, menu_selector(Popup::onLevelCheck));
+            m_infoBtn->setID("level-check-button"_spr);
+            m_buttonMenu->addChildAtPosition(m_infoBtn, Anchor::Bottom, ccp(0, kStatusY));
+        }
 
         m_startSpr = ButtonSprite::create("Start", "goldFont.fnt", "GJ_button_01.png", .9f);
         m_startBtn = CCMenuItemSpriteExtra::create(m_startSpr, this,
@@ -583,12 +657,6 @@ protected:
         m_optBtn->setVisible(m_mode == UI_MODE_SOLVE);
         m_optBtn->setEnabled(m_mode == UI_MODE_SOLVE);
         m_note->setVisible(bot);
-        if (m_search != UI_SEARCH_DP) {
-            m_searchNote->setString((std::string("Search: ") + uiSearchName(m_search)
-                                     + " is experimental: the level is more likely not to be "
-                                       "solved.").c_str());
-            geode::cocos::limitNodeWidth(m_searchNote, kW - 30.f, .55f, .3f);
-        }
         // Saying so here, rather than letting the session find out after the level has loaded,
         // is the point of asking before the level starts.
         const bool ok = m_mode != UI_MODE_REPLAY || hasSolution();
@@ -601,26 +669,9 @@ protected:
         const bool solved = hasSolution();
         const std::string older = (m_mode == UI_MODE_SOLVE && solved) ? olderSolve(m_coins)
                                                                       : std::string();
-        if (!older.empty()) {
-            m_versionNote->setString(("Solved with " + older + ". Solving it again with "
-                                      + modVersion() + " may not succeed.").c_str());
-            geode::cocos::limitNodeWidth(m_versionNote, kW - 30.f, .55f, .3f);
-        }
-        float y = kNoteY;
-        for (auto [label, show] :
-             {std::pair{m_rngNote, m_facts.random},
-              std::pair{m_glitchNote, m_mode == UI_MODE_SOLVE && m_glitch},
-              std::pair{m_searchNote, m_mode == UI_MODE_SOLVE && m_search != UI_SEARCH_DP},
-              std::pair{m_versionNote, !older.empty()},
-              std::pair{m_yellowNote, !solved && m_facts.newer && !m_facts.official},
-              std::pair{m_attemptNote, !solved && m_facts.attempts},
-              std::pair{m_redNote, !solved && m_facts.unmodelled != 0}}) {
-            label->setVisible(bot && show);
-            if (bot && show) {
-                y += kNoteRow;
-                label->updateAnchoredPosition(Anchor::Bottom, cocos2d::CCPoint(0.f, y));
-            }
-        }
+        // Kairos: the notes for these choices, and the status line they make.
+        m_rows = currentNotes(solved, older);
+        updateStatus(bot);
         m_desc->setString(ok ? describe(m_mode, m_coins)
                              : (m_coins ? "No stored coin solution for this level yet.\n"
                                           "Solve it with Coins on first."

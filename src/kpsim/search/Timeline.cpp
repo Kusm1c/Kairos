@@ -4,10 +4,11 @@
 
 namespace kpsim::search {
 
-RunResult Timeline::advance(const Plan& plan, Tick until) {
+RunResult Timeline::advance(const Plan& plan, Tick until, std::vector<uint64_t>* nearTrace) {
     m_plan = plan;
     if (m_trace.size() > m_engine.tick()) m_trace.resize(m_engine.tick());
     Trace rec{&m_trace};
+    rec.nearRecord = nearTrace;
     for (;;) {
         Tick now = m_engine.tick();
         Tick next = (now / m_spacing + 1) * m_spacing;

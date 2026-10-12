@@ -1,8 +1,10 @@
 #include "Optimizer.hpp"
+#include "EdgeShift.hpp"
 #include "InputRules.hpp"
 #include "Timeline.hpp"
 
 #include <algorithm>
+#include <functional>
 #include <map>
 #include <string>
 #include <tuple>
@@ -21,6 +23,7 @@ public:
     void run(const Plan& start) {
         m_plan = start;
         m_out.clicksBefore = start.presses();
+        m_out.inputsBefore = start.inputs();
         m_e.status("base run");
         m_e.reset();
         RunResult r = m_tl.advance(m_plan, 240u * 60u * 30u);
@@ -29,7 +32,47 @@ public:
         if (!m_out.finishedBefore) return;
         m_goal = r.tick + kFinishSlack;
         refreshKnown();
+        m_history.push_back({m_plan, 0, 0, {}});
 
+        stages();
+        for (int attempt = 0;; ++attempt) {
+            m_out.violations = violations();
+            m_stage = 5;
+            m_e.status("verifying from the start");
+            advance(0, 1);
+            if (replays(m_plan, true)) {
+                m_out.verified = true;
+                m_out.plan = m_plan;
+                return;
+            }
+            if (m_history.size() < 2) return;
+            // The game refused one of the changes: drop it, then redo the later ones that still apply.
+            const size_t bad = firstRefused();
+            const std::vector<Step> later(m_history.begin() + (ptrdiff_t)bad, m_history.end());
+            const Counters last = counters();
+            m_banned.push_back({later[0].first, later[0].last});
+            ++m_out.rejected;
+            restoreCounters(later[0].counters);
+            m_plan = m_history[bad - 1].plan;
+            m_history.resize(bad);
+            if (attempt + 1 >= m_o.retries) {
+                m_out.verified = replays(m_plan, true);
+                if (m_out.verified) m_out.plan = m_plan;
+                return;
+            }
+            rebuild();
+            for (size_t k = 1; k < later.size(); ++k) {
+                m_e.status("the game refused a change at " + std::to_string(later[0].first) + ": redoing the next ones " +
+                           std::to_string(k) + "/" + std::to_string(later.size() - 1));
+                Plan cand;
+                if (!applyChange(later[k - 1].plan, later[k].plan, later[k].first, later[k].last, cand)) continue;
+                if (tryAdopt(cand)) addCounters(later[k].counters, k + 1 < later.size() ? later[k + 1].counters : last);
+            }
+        }
+    }
+
+private:
+    void stages() {
         m_stage = 0;
         humanize();
         m_stage = 1;
@@ -38,29 +81,145 @@ public:
         merges();
         m_stage = 3;
         removals();
-        // More rounds while they keep taking clicks away.
+        // More rounds while they keep taking inputs away.
         for (int round = 1; round < m_o.rounds; ++round) {
-            const size_t before = m_plan.presses();
+            const size_t before = m_plan.inputs();
             merges();
             removals();
-            if (m_plan.presses() == before) break;
+            if (m_o.transfers) transfers();
+            if (m_o.holdToEnd) holdToEnd();
+            if (m_plan.inputs() == before) break;
         }
         m_stage = 4;
         if (m_o.center) center();
-        m_stage = 5;
-        m_out.violations = violations();
-
-        m_e.status("verifying from the start");
-        advance(0, 1);
-        m_e.reset();
-        m_e.setStepsPerUpdate(1);
-        RunResult v = m_e.run(m_plan, m_goal);
-        m_e.setStepsPerUpdate(0);
-        m_out.verified = v.outcome == Outcome::Finished;
-        if (m_out.verified) m_out.plan = m_plan;
     }
 
-private:
+    // A run of the whole plan from the start; `strict`: one step per frame, as a player gets.
+    bool replays(const Plan& p, bool strict) {
+        m_e.reset();
+        if (strict) m_e.setStepsPerUpdate(1);
+        RunResult v = m_e.run(p, m_goal);
+        m_e.setStepsPerUpdate(0);
+        return v.outcome == Outcome::Finished;
+    }
+
+    // The first change in the history after which the plan no longer replays (bisection).
+    size_t firstRefused() {
+        m_e.status("finding the change the game refused");
+        // Fast runs when they show it, else the strict ones that did.
+        const bool strict = replays(m_history.back().plan, false);
+        size_t good = 0, bad = m_history.size() - 1;
+        while (bad - good > 1) {
+            const size_t mid = (good + bad) / 2;
+            (replays(m_history[mid].plan, strict) ? good : bad) = mid;
+        }
+        return bad;
+    }
+
+    // Timeline and known states again, for the current plan.
+    void rebuild() {
+        m_tl.clear();
+        m_e.reset();
+        m_tl.advance(m_plan, m_goal);
+        refreshKnown();
+        m_changes.clear();
+        m_dead.clear();
+    }
+
+    struct Counters {
+        size_t removed = 0, merged = 0, centered = 0, humanized = 0;
+    };
+    Counters counters() const { return {m_out.removed, m_out.merged, m_out.centered, m_out.humanized}; }
+    void restoreCounters(const Counters& c) {
+        m_out.removed = c.removed;
+        m_out.merged = c.merged;
+        m_out.centered = c.centered;
+        m_out.humanized = c.humanized;
+    }
+    // What one change counted, counted again.
+    void addCounters(const Counters& before, const Counters& after) {
+        m_out.removed += after.removed - before.removed;
+        m_out.merged += after.merged - before.merged;
+        m_out.centered += after.centered - before.centered;
+        m_out.humanized += after.humanized - before.humanized;
+    }
+
+    // `to` was `from` with the inputs in [first, last] changed: the same change on the current plan,
+    // if its holds there are still those of `from`.
+    bool applyChange(const Plan& from, const Plan& to, Tick first, Tick last, Plan& out) const {
+        auto touches = [&](const Hold& h) { return h.press <= last && h.release >= first; };
+        out = m_plan;
+        for (int ch = 0; ch < 2; ++ch) {
+            Holds was, here, keep;
+            for (const auto& h : from.channel(ch))
+                if (touches(h)) was.push_back(h);
+            for (const auto& h : m_plan.channel(ch)) (touches(h) ? here : keep).push_back(h);
+            if (was != here) return false;
+            for (const auto& h : to.channel(ch))
+                if (touches(h)) keep.push_back(h);
+            std::sort(keep.begin(), keep.end(), [](const Hold& a, const Hold& b) { return a.press < b.press; });
+            out.channel(ch) = std::move(keep);
+        }
+        return out.valid() && !(out == m_plan);
+    }
+
+    // Two inputs less with the same time held around them: a hold's ticks go to a neighbour hold, or
+    // a gap's ticks come off the holds it joins. In the wave (and nearly in the ship) the player
+    // ends where it did, by another path.
+    void transfers() {
+        for (int ch = 1; ch >= 0; --ch)
+            for (size_t i = m_plan.channel(ch).size(); i-- > 0;) {
+                if ((i & 7) == 0) {
+                    status("fewer inputs");
+                    advance(m_plan.channel(ch).size() - i, m_plan.channel(ch).size());
+                }
+                const Holds& h = m_plan.channel(ch);
+                if (h[i].release == macro::kNever) continue;
+                const Tick held = h[i].release - h[i].press;
+                const Tick gap = i + 1 < h.size() ? h[i + 1].press - h[i].release : 0;
+                // kind, edit: the hold into the previous / next one, the gap after it off either end.
+                const std::pair<int, std::function<bool(Holds&)>> edits[] = {
+                    {2, [&](Holds& q) { if (!i) return false; q[i - 1].release += held; q.erase(q.begin() + (ptrdiff_t)i); return true; }},
+                    {3, [&](Holds& q) { if (i + 1 >= q.size()) return false; q[i + 1].press -= held; q.erase(q.begin() + (ptrdiff_t)i); return true; }},
+                    {4, [&](Holds& q) {
+                         if (!gap) return false;
+                         q[i].release = q[i + 1].release; q.erase(q.begin() + (ptrdiff_t)i + 1);
+                         if (q[i].press + gap >= q[i].release) return false;
+                         q[i].press += gap;
+                         return true;
+                     }},
+                    {5, [&](Holds& q) {
+                         if (!gap || q[i + 1].release == macro::kNever) return false;
+                         q[i].release = q[i + 1].release - gap; q.erase(q.begin() + (ptrdiff_t)i + 1);
+                         return q[i].press < q[i].release;
+                     }},
+                };
+                for (const auto& [kind, edit] : edits) {
+                    const Key key{kind, ch, h[i].press};
+                    if (failedBefore(key)) continue;
+                    Plan p = m_plan;
+                    if (!edit(p.channel(ch)) || !p.valid()) continue;
+                    Span tried;
+                    if (tryAdopt(p, &tried)) {
+                        ++m_out.merged;
+                        break;
+                    }
+                    m_dead[key] = {tried, m_changes.size()};
+                }
+            }
+    }
+
+    // Holding the last press of each button to the end: one release less.
+    void holdToEnd() {
+        for (int ch = 0; ch < 2; ++ch) {
+            const Holds& h = m_plan.channel(ch);
+            if (h.empty() || h.back().release == macro::kNever) continue;
+            Plan p = m_plan;
+            p.channel(ch).back().release = macro::kNever;
+            tryAdopt(p);
+        }
+    }
+
     // States of the current plan's run: from any of them, the plan finishes.
     void refreshKnown() {
         m_known.clear();
@@ -79,6 +238,8 @@ private:
         const Tick first = firstDifference(m_plan, cand);
         if (first == macro::kNever) return false;
         const Tick last = lastDifference(m_plan, cand);
+        for (const auto& b : m_banned)
+            if (first <= b.second + 2 && last + 2 >= b.first) return false;
         m_tl.seek(first >= 2 ? first - 2 : 0);
         const Tick from = m_e.tick();
         Trace tr{&m_rec, &m_known, last};
@@ -97,6 +258,7 @@ private:
         } else {
             return false;
         }
+        m_history.push_back({cand, first, last, counters()});
         m_plan = cand;
         refreshKnown();
         return true;
@@ -109,16 +271,18 @@ private:
         return false;
     }
 
-    // Would `cand` finish? The plan does not change.
-    bool finishes(const Plan& cand) {
+    // Would `cand` finish, and if not when does it die? The plan does not change.
+    Try probe(const Plan& cand) {
         const Tick first = firstDifference(m_plan, cand);
-        if (first == macro::kNever) return true;
+        if (first == macro::kNever) return {true};
         m_tl.seek(first >= 2 ? first - 2 : 0);
         Trace tr{nullptr, &m_known, lastDifference(m_plan, cand)};
         RunResult r = m_e.run(cand, m_goal, &tr);
         ++m_out.trials;
-        return r.outcome == Outcome::Finished || (r.outcome == Outcome::Converged && r.end == macro::kNever);
+        if (r.outcome == Outcome::Converged) return {r.end == macro::kNever, r.end};
+        return {r.outcome == Outcome::Finished, r.tick};
     }
+    bool finishes(const Plan& cand) { return probe(cand).ok; }
 
     // Hold i and its gaps keep the human minimums.
     bool humanOk(const Holds& h, size_t i) const {
@@ -230,29 +394,22 @@ private:
             }
     }
 
-    // A copy with one edge moved, or nothing if the move breaks the order of the holds.
-    bool moved(int ch, size_t i, bool press, int64_t t, Plan& out) const {
-        out = m_plan;
-        Holds& h = out.channel(ch);
-        (press ? h[i].press : h[i].release) = (Tick)t;
-        if (h[i].press < 1 || h[i].release <= h[i].press) return false;
-        if (i && h[i].press <= h[i - 1].release) return false;
-        if (i + 1 < h.size() && h[i].release >= h[i + 1].press) return false;
-        return humanOk(h, i);
+    // The plan with this edge moved by `shift` that still finishes, the next inputs re-timed if
+    // needed (the rule of the frame windows).
+    Shift shifted(int ch, size_t i, bool press, int shift) {
+        return shiftEdge(m_plan, {ch, i, press}, shift, [&](const Plan& p) { return probe(p); },
+                         [&](const Holds& h, size_t k) { return humanOk(h, k); });
     }
+    bool fits(int ch, size_t i, bool press, int shift) { return shifted(ch, i, press, shift).result == Shift::Passed; }
 
-    // Does the plan still finish with this edge moved by `shift`?
-    bool fits(int ch, size_t i, bool press, int shift) {
-        const Hold& hold = m_plan.channel(ch)[i];
-        Plan p;
-        return moved(ch, i, press, (int64_t)(press ? hold.press : hold.release) + shift, p) && finishes(p);
-    }
-
-    // How far the edge moves each way and still finishes (up to cap).
-    int reach(int ch, size_t i, bool press, int dir, int cap) {
-        int ok = 0;
-        while (ok < cap && fits(ch, i, press, dir * (ok + 1))) ++ok;
-        return ok;
+    // How far the edge moves each way and still finishes (up to cap), and the plan at each shift.
+    int reach(int ch, size_t i, bool press, int dir, int cap, std::vector<Plan>& plans) {
+        while ((int)plans.size() < cap) {
+            Shift s = shifted(ch, i, press, dir * ((int)plans.size() + 1));
+            if (s.result != Shift::Passed) break;
+            plans.push_back(std::move(s.plan));
+        }
+        return (int)plans.size();
     }
 
     void center() {
@@ -269,17 +426,15 @@ private:
                     }
                     // Comfortable room each way: leave it.
                     if (fits(ch, i, press, -m_o.comfort) && fits(ch, i, press, +m_o.comfort)) continue;
-                    int early = reach(ch, i, press, -1, m_o.maxShift), late = reach(ch, i, press, +1, m_o.maxShift);
+                    std::vector<Plan> earlier, later;
+                    int early = reach(ch, i, press, -1, m_o.maxShift, earlier);
+                    int late = reach(ch, i, press, +1, m_o.maxShift, later);
                     lower(before, early + late + 1);
                     int d = (late - early) / 2;
-                    if (d != 0) {
-                        const Hold& h = m_plan.channel(ch)[i];
-                        Plan p;
-                        if (moved(ch, i, press, (int64_t)(press ? h.press : h.release) + d, p) && tryAdopt(p)) {
-                            ++m_out.centered;
-                            early += d;
-                            late -= d;
-                        }
+                    if (d != 0 && tryAdopt(d < 0 ? earlier[-d - 1] : later[d - 1])) {
+                        ++m_out.centered;
+                        early += d;
+                        late -= d;
                     }
                     lower(after, early + late + 1);
                 }
@@ -309,6 +464,14 @@ private:
     std::vector<uint64_t> m_rec;
     std::vector<Span> m_changes;   // adopted, in order
     std::map<Key, std::pair<Span, size_t>> m_dead;   // failed edits, and the changes made by then
+    // Every adopted plan, the ticks its change touched and the counters before it.
+    struct Step {
+        Plan plan;
+        Tick first, last;
+        Counters counters;
+    };
+    std::vector<Step> m_history;
+    std::vector<std::pair<Tick, Tick>> m_banned;   // ticks of changes the final replay refused
 };
 
 } // namespace

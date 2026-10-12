@@ -14,8 +14,8 @@ void captureEngineSnap(PlayerObject* player, kpsim::engine::EngineSnap& out);
 // Not reproducible between attempts, or only a cache.
 bool isVolatileField(const char* name);
 
-// Hash of the reproducible physics fields.
-uint64_t physicsHash(const kpsim::engine::EngineSnap& s);
+// Hash of the reproducible physics fields; `grid` > 0: of the fields rounded to it.
+uint64_t physicsHash(const kpsim::engine::EngineSnap& s, double grid = 0);
 
 // First differing reproducible fields, empty when equal.
 std::string physicsDiff(const kpsim::engine::EngineSnap& expected, const kpsim::engine::EngineSnap& got);

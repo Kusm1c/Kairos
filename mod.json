@@ -60,6 +60,12 @@
 			"min": 0,
 			"max": 600
 		},
+		"hide-level": {
+			"name": "Hide the level while the bot searches",
+			"description": "Solve and the Kairos jobs play the level out of order, so its flashes and colour changes strobe. A dark screen covers it until they finish. Watch and rhythm practice are never hidden.",
+			"type": "bool",
+			"default": true
+		},
 		"solver-header": {
 			"name": "Solver",
 			"type": "title"

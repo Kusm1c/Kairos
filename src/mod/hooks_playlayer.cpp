@@ -5,6 +5,11 @@
 
 using namespace p1;
 
+// Kairos: the Kairos engine (src/kairos/GameEngine.cpp) is restoring the level for its search. The
+// loop stays out of its way, as for a section solve: its bookkeeping turned a 2 ms restore into tens
+// of ms.
+namespace kp { bool engineResetting(); }
+
 // Leaving the level, however it is left: PlayLayer::onQuit, and the two ways back to the editor that
 // never reach it (the goEdit hooks at the end of this file). `why` is the session end's reason,
 // `censusWhy` the memory census's label.
@@ -237,6 +242,11 @@ class $modify(PlayLayer) {
     }
 
     void resetLevel() {
+        // Kairos: a restore of the Kairos engine is inside its search (kp::engineResetting, top).
+        if (kp::engineResetting()) {
+            PlayLayer::resetLevel();
+            return;
+        }
         // A person has the input (mod/takeover.hpp): whatever asked for this reset -- GD after a
         // death, most often -- gets a restore of the takeover's checkpoint instead, at the next
         // frame boundary (takeoverRestore), and never a run from the head.

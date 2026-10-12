@@ -1,4 +1,5 @@
 #include "Jobs.hpp"
+#include "CalmScreen.hpp"
 #include "Fiber.hpp"
 #include "GameEngine.hpp"
 #include "ModGuard.hpp"
@@ -32,6 +33,34 @@ kpsim::search::InputRules humanRules() {
     if (const int64_t cps = Mod::get()->getSettingValue<int64_t>("max-cps"); cps > 0)
         r.minInterval = (Tick)((240 + cps - 1) / cps);
     return r;
+}
+
+std::string limitBreach(const kpsim::macro::Plan& plan) {
+    const auto r = humanRules();
+    if (!r.minPress && !r.minRelease && !r.minInterval) return {};
+    for (int ch = 0; ch < 2; ++ch) {
+        const auto& h = plan.channel(ch);
+        for (size_t i = 0; i < h.size(); ++i) {
+            std::vector<std::string> need;
+            if (h[i].release != kpsim::macro::kNever && h[i].release - h[i].press < r.minPress)
+                need.push_back(fmt::format("a {}-tick press", h[i].release - h[i].press));
+            if (i && h[i].press - h[i - 1].release < r.minRelease)
+                need.push_back(fmt::format("a {}-tick gap", h[i].press - h[i - 1].release));
+            if (i && r.minInterval && h[i].press - h[i - 1].press < r.minInterval) {
+                const double d = h[i].press - h[i - 1].press;
+                need.push_back(fmt::format("presses {:.2f} s apart ({:.0f} CPS)", d / 240.0, 240.0 / d));
+            }
+            if (need.empty()) continue;
+            std::string what;
+            for (size_t k = 0; k < need.size(); ++k)
+                what += (k ? (k + 1 == need.size() ? " and " : ", ") : "") + need[k];
+            const int64_t cps = Mod::get()->getSettingValue<int64_t>("max-cps");
+            return fmt::format("At {:.2f} s{} it needs {}. Your limits: {}-tick presses and gaps{}.",
+                               h[i].press / 240.0, ch ? " (player 2)" : "", what, r.minPress,
+                               cps > 0 ? fmt::format(", {} CPS", cps) : std::string());
+        }
+    }
+    return {};
 }
 
 namespace {
@@ -108,9 +137,15 @@ std::string windowsReport(GJGameLevel* level, const JobRequest& req, const kpsim
     int removable = 0;
     for (auto& v : r.removable)
         for (bool b : v) removable += b;
-    out += fmt::format("\n{} edges, {} frame-perfect, {} clicks removable, {} trials ({} cut short)\n",
-                       r.edges.size(), perfect, removable, r.trials, r.pruned);
+    const auto st = kpsim::search::windowStats(r, 1.0);
+    out += fmt::format("\n{} edges, frame-perfect at 60 / 120 / 240 FPS: {:.0f} / {:.0f} / {}, {} clicks removable, "
+                       "{} trials ({} cut short)\n",
+                       r.edges.size(), st.perfectAt[0], st.perfectAt[1], perfect, removable, r.trials, r.pruned);
     out += "+ = limited by a neighbour edge or the search range, not by a death\n";
+    out += fmt::format("Windows count the next inputs re-timed by about the same shift ({} sides needed it)\n",
+                       r.followed);
+    if (st.precision > 0)
+        out += fmt::format("Precision for a 24 h clear: {:.1f} sigma/s (nandl.pages.dev base formula)\n", st.precision);
     for (int p = 0; p < 2; ++p)
         for (size_t i = 0; i < r.removable[p].size(); ++i)
             if (r.removable[p][i]) out += fmt::format("click {} is not needed\n", name(p, i));
@@ -129,6 +164,10 @@ public:
         return nullptr;
     }
 
+    ~JobRunner() override {
+        if (m_panel) m_panel->removeFromParent();
+    }
+
     void cancelNow() {
         if (!m_task || m_task->done()) return;
         m_engine->cancel();
@@ -141,8 +180,8 @@ private:
         if (!CCNode::init()) return false;
         m_layer = layer;
         m_request = std::move(request);
+        // On the scene, above the cover that hides the level (CalmScreen); placed once there is one.
         m_panel = ProgressPanel::create(fmt::format("{}  -  {}", jobTitle(), std::string(layer->m_level->m_levelName)));
-        this->addChild(m_panel);
         m_panel->onStop([this] {
             if (m_engine) m_engine->cancel();
         });
@@ -168,6 +207,8 @@ private:
 
     void start() {
         if (auto why = refuseReason(); !why.empty()) {
+            m_finished = true;
+            m_panel->removeFromParent();
             FLAlertLayer::create("Kairos", why, "OK")->show();
             return;
         }
@@ -211,6 +252,8 @@ private:
     }
 
     void update(float) override {
+        if (m_panel && !m_panel->getParent() && !m_finished)
+            if (auto* scene = m_layer->getParent()) scene->addChild(m_panel, kPanelZ);
         if (!m_begun) {
             if (!m_layer->m_started) return;   // intro still running
             m_begun = true;
@@ -220,9 +263,9 @@ private:
         if (!m_task || m_task->done() || m_layer->m_isPaused) return;
         double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - m_started).count();
         if (m_limitMinutes > 0 && elapsed > m_limitMinutes * 60.0) m_engine->cancel();
-        // Long slices: each frame is time not spent on the job.
+        // About 60 frames a second: with the level hidden a frame costs little.
         auto t0 = std::chrono::steady_clock::now();
-        const bool ended = m_task->resume(30.0);
+        const bool ended = m_task->resume(16.0);
         m_workMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
         if (ended) {
             finish(false);
@@ -265,7 +308,8 @@ private:
         m_layer->m_clickOnSteps = m_savedCOS;
         m_layer->m_checkpointArray->removeAllObjects();
         setLayersVisible(true);
-        m_panel->setVisible(false);
+        m_finished = true;
+        m_panel->removeFromParent();
         if (!m_quitting) {
             if (!m_layer->m_isPaused) m_layer->resetLevel();
             report(cancelled, error, stats, elapsed);
@@ -275,18 +319,23 @@ private:
 
     void logSummary(const EngineStats& st, double elapsed, bool cancelled, const std::string& error) {
         GJGameLevel* level = m_layer->m_level;
+        const auto fp = kpsim::search::windowStats(m_windows, 1.0);
         std::string what = m_request.kind == JobKind::Optimize
-                               ? fmt::format("optimize finished={} verified={} clicks {}->{} removed={} merged={} "
-                                             "centered={} narrowest {}->{} trials={}",
+                               ? fmt::format("optimize finished={} verified={} clicks {}->{} inputs {}->{} removed={} "
+                                             "merged={} centered={} rejected={} narrowest {}->{} trials={}",
                                              m_opt.finishedBefore, m_opt.verified, m_opt.clicksBefore,
-                                             m_opt.plan.presses(), m_opt.removed, m_opt.merged, m_opt.centered,
+                                             m_opt.plan.presses(), m_opt.inputsBefore, m_opt.plan.inputs(),
+                                             m_opt.removed, m_opt.merged, m_opt.centered, m_opt.rejected,
                                              m_opt.narrowestBefore, m_opt.narrowestAfter, m_opt.trials)
                            : m_request.kind == JobKind::FindPath
                                ? fmt::format("path solved={} furthest={} clicks={} trials={} cut={} backtracks={}",
                                              m_path.solved, m_path.furthest, m_path.plan.presses(), m_path.trials,
                                              m_path.pruned, m_path.backtracks)
-                               : fmt::format("windows edges={} trials={} cut={} complete={}", m_windows.edges.size(),
-                                             m_windows.trials, m_windows.pruned, m_windows.complete);
+                               : fmt::format("windows edges={} trials={} cut={} complete={} followed={} "
+                                             "frame-perfect 60/120/240 fps={:.0f}/{:.0f}/{} nandl-precision={:.1f}",
+                                             m_windows.edges.size(), m_windows.trials, m_windows.pruned,
+                                             m_windows.complete, m_windows.followed, fp.perfectAt[0],
+                                             fp.perfectAt[1], fp.framePerfect, fp.precision);
         log::info("[kp] {} ({}) {}{}{} | {:.1f}s, {} steps ({:.0f}k/s), {} saves, {} restores ({:.2f} ms avg), "
                   "{} snapshot mismatches",
                   std::string(level->m_levelName), (int)level->m_levelID, what, cancelled ? " cancelled" : "",
@@ -323,10 +372,14 @@ private:
                 return;
             }
             if (!m_opt.verified) {
-                FLAlertLayer::create("Kairos", "<cr>The simplified plan did not replay; nothing was saved.</c>" + note,
+                FLAlertLayer::create("Kairos",
+                                     "<cr>No simpler plan replayed from the start; nothing was saved.</c>" + note,
                                      "OK")->show();
                 return;
             }
+            if (m_opt.rejected)
+                note += fmt::format("\n<cy>{} changes did not hold up in the full replay and were dropped.</c>",
+                                    m_opt.rejected);
             auto path = solutionPath(level);
             kpsim::macro::writeFile(path, kpsim::macro::writeGdr2(m_opt.plan, (uint32_t)level->m_levelID,
                                                                    std::string(level->m_levelName)));
@@ -342,17 +395,19 @@ private:
             }
             Plan plan = m_opt.plan;
             PlayLayer* layer = m_layer;
-            auto ticks = [](int w) { return w < 0 ? std::string("3+ each way") : fmt::format("{} ticks", w); };
-            std::string human = m_opt.violations
-                                    ? fmt::format("\n<cy>{} presses or gaps are still shorter than the human minimum.</c>",
-                                                  m_opt.violations)
-                                    : "";
+            auto ticks = [](int w) { return w < 0 ? std::string("comfortable") : fmt::format("{} ticks", w); };
+            // Still faster than the human limits somewhere: where first, and what it takes.
+            const std::string breach = limitBreach(m_opt.plan);
+            std::string human = breach.empty() ? std::string()
+                                               : fmt::format("\n<cy>Still beyond your limits ({} places). {}</c>",
+                                                             m_opt.violations, breach);
             createQuickPopup("Optimized",
-                             fmt::format("<cg>Verified</c>: {} -> {} clicks ({} removed, {} merged, {} made human).\n"
-                                         "Narrowest window: {} -> {} ({} timings centered).\nSaved to {}{}{}",
-                                         m_opt.clicksBefore, m_opt.plan.presses(), m_opt.removed, m_opt.merged,
-                                         m_opt.humanized, ticks(m_opt.narrowestBefore), ticks(m_opt.narrowestAfter),
-                                         m_opt.centered, path.string(), human, note),
+                             fmt::format("<cg>Verified</c>: {} -> {} clicks, {} -> {} inputs ({} removed, {} merged, "
+                                         "{} made human).\nNarrowest window: {} -> {} ({} timings centered).\nSaved to {}{}{}",
+                                         m_opt.clicksBefore, m_opt.plan.presses(), m_opt.inputsBefore,
+                                         m_opt.plan.inputs(), m_opt.removed, m_opt.merged, m_opt.humanized,
+                                         ticks(m_opt.narrowestBefore), ticks(m_opt.narrowestAfter), m_opt.centered,
+                                         path.string(), human, note),
                              "OK", "Watch", [plan, layer](FLAlertLayer*, bool watch) { if (watch) startWatch(layer, plan); });
             return;
         }
@@ -384,15 +439,15 @@ private:
             std::ofstream(path) << text;
             std::ofstream(statsPath(level))
                 << kpsim::search::writeWindowFile(m_windows, m_request.source, m_request.plan.fingerprint());
-            int perfect = 0;
-            for (auto& w : m_windows.edges) perfect += w.early + w.late == 0;
+            const auto st = kpsim::search::windowStats(m_windows, 1.0);
             auto windows = m_windows;
             auto source = m_request.source;
             createQuickPopup("Frame windows",
-                             fmt::format("{}{} edges, {} frame-perfect.\nBase run {} at tick {}.\nReport: {}{}",
+                             fmt::format("{}{} edges. Frame-perfect at 60 / 120 / 240 FPS: {:.0f} / {:.0f} / {}.\n"
+                                         "Base run {} at tick {}.\nReport: {}{}",
                                          m_windows.complete ? "" : "<cy>Partial:</c> ", m_windows.edges.size(),
-                                         perfect, outcomeName(m_windows.base.outcome), m_windows.base.tick,
-                                         path.string(), note),
+                                         st.perfectAt[0], st.perfectAt[1], st.framePerfect,
+                                         outcomeName(m_windows.base.outcome), m_windows.base.tick, path.string(), note),
                              "OK", "Stats", [windows, source](FLAlertLayer*, bool stats) {
                                  if (stats) showWindowStats(windows, source);
                              });
@@ -405,7 +460,8 @@ public:
 private:
     PlayLayer* m_layer = nullptr;
     JobRequest m_request;
-    ProgressPanel* m_panel = nullptr;
+    Ref<ProgressPanel> m_panel;
+    bool m_finished = false;
     std::unique_ptr<GameEngine> m_engine;
     std::unique_ptr<FiberTask> m_task;
     kpsim::search::PathResult m_path;

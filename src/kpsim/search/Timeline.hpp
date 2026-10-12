@@ -13,8 +13,8 @@ public:
     ~Timeline() { clear(); }
 
     // Runs `plan` from the engine's tick to `until`, snapshotting on the way.
-    // `plan` must match the previous one up to the engine's tick.
-    RunResult advance(const Plan& plan, Tick until);
+    // `plan` must match the previous one up to the engine's tick. `nearTrace`: Trace::nearRecord.
+    RunResult advance(const Plan& plan, Tick until, std::vector<uint64_t>* nearTrace = nullptr);
     // Engine at the latest usable snapshot <= t (else level start). Returns its tick.
     Tick seek(Tick t);
     // Plan changed after t: later snapshots are invalid.

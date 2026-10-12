@@ -5,7 +5,10 @@ cd "$(dirname "$0")"
 MODS="/c/Users/Kusmic/Documents/GeodeModing/geode/mods"
 
 mkdir -p build
-cmake -S . -B build -A x64 > build/configure.log 2>&1 || { tail -20 build/configure.log; echo "x configure failed"; exit 1; }
+# Once configured, the build reconfigures by itself when a CMakeLists.txt changes.
+if [ ! -f build/CMakeCache.txt ]; then
+    cmake -S . -B build -A x64 > build/configure.log 2>&1 || { tail -20 build/configure.log; echo "x configure failed"; exit 1; }
+fi
 cmake --build build --config RelWithDebInfo > build/build.log 2>&1
 if grep -E "error C|error LNK|fatal error" build/build.log | sort -u | head -20 | grep .; then echo "x build failed"; exit 1; fi
 [ -f build/kusmic.kairos.geode ] || { echo "x no .geode produced"; exit 1; }

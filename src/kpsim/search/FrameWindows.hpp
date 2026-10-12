@@ -29,6 +29,7 @@ struct WindowReport {
     std::vector<EdgeWindow> edges;
     std::vector<bool> removable[2];   // per button, per hold
     int cap = 0;                      // maxShift; 0 = unknown (older files)
+    size_t followed = 0;              // sides that needed the next inputs re-timed
     uint64_t trials = 0;
     uint64_t pruned = 0;
     size_t rejectedSnapshots = 0;
@@ -36,6 +37,7 @@ struct WindowReport {
     bool complete = false;
 };
 
+// Window: the shifts that still finish, the next inputs re-timed as a player would.
 // Reported bounds and removals are always replayed to the goal.
 void findWindows(Engine& engine, const Plan& plan, const WindowOptions& options, WindowReport& out);
 

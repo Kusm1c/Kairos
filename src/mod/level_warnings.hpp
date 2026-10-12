@@ -14,11 +14,14 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <limits>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -74,7 +77,8 @@ enum : uint32_t {
     // A Follow Player Y (1814) with a delay (key 91) -- it follows the player's y that long ago,
     // from a ring of past heights a state cannot carry -- or one set off by touch or by a spawn
     // (keys 11 / 62) rather than by its x: dp cli.hpp's followy block says "NOT modelled: delayed"
-    // and "touch- or spawn-triggered".
+    // and "touch- or spawn-triggered". Kairos: given the game's object types (scan's `collides`),
+    // only one that moves something the player can touch.
     kFollowNotRun = 1u << 9,
     // More Follow Player Y runs at once than a state holds -- "NOT modelled: one more than a state's
     // slots" in the same block. See followSlotsShort.
@@ -130,11 +134,49 @@ inline bool isNewer(int id) {
     return std::binary_search(std::begin(kNewer), std::end(kNewer), id);
 }
 
+// Kairos: one row of the menu's Level check (src/kairos/LevelCheckPopup), most severe first.
+enum class Severity { Bad, Caution, Info, Fine };
+struct Note {
+    Severity severity;
+    std::string title;    // a few words: the menu's status line shows it
+    std::string detail;   // where and why
+};
+
 struct Findings {
     uint32_t unmodelled = 0;   // the bits above
     bool newer = false;        // an object in kNewer
     std::unordered_map<int, int> newerCount;   // how many of each kNewer object, for the log
+    std::vector<Note> notes;   // Kairos: the Follow Player Y found (the other bits: bitNotes)
 };
+
+// Kairos: a short title and a line of why for each bit, in bit order (kFollowNotRun's notes come from
+// scan, which names each trigger).
+inline const char* const kUnmodelledTitles[] = {
+    "Sideways teleports", "Pushing teleport orbs", "Teleports with several exits",
+    "Touch or spawn teleport triggers", "Touch or spawn gravity triggers", "Too many gravity portals",
+    "Attempt-counting triggers", "Platformer mode", "Two-player mode", "Follow Player Y",
+    "Too many Follow Player Y",
+};
+inline const char* const kUnmodelledDetails[] = {
+    "x is the solver's clock: an exit elsewhere in x is a jump it cannot take.",
+    "They set the player's speed, which the solver reads on portals only.",
+    "The game picks one exit at random; the solver takes the first.",
+    "Set off by touch or by a spawn, or keeping the player's offset.",
+    "Set off by touch or by a spawn, or acting on player 2.",
+    "More than the 128 the solver can tell apart.",
+    "The level changes with the attempt count.",
+    "Platformer levels are not solved.",
+    "Only player 1's button is pressed.",
+    "",
+    "More than two running at once.",
+};
+inline std::vector<Note> bitNotes(uint32_t bits) {
+    std::vector<Note> v;
+    for (size_t i = 0; i < sizeof(kUnmodelledTitles) / sizeof(kUnmodelledTitles[0]); ++i)
+        if ((bits & (1u << i)) && (1u << i) != kFollowNotRun)
+            v.push_back({Severity::Bad, kUnmodelledTitles[i], kUnmodelledDetails[i]});
+    return v;
+}
 
 // The key's value in one object's "k,v,k,v" run, or empty.
 inline std::string_view field(std::string_view kv, std::string_view key) {
@@ -299,7 +341,10 @@ inline bool followSlotsShort(std::vector<FollowRun> runs, double dxMax) {
     return false;
 }
 
-inline Findings scan(std::string_view all, bool platformer) {
+// Kairos: `collides(id)`, when given, says whether an object of that id can touch the player (the
+// game's own type, asked by the menu). A Follow Player Y then counts only when what it moves can.
+// Without it every one counts, as before.
+inline Findings scan(std::string_view all, bool platformer, const std::function<bool(int)>& collides = {}) {
     Findings r;
     if (platformer) r.unmodelled |= kPlatformer;
     const std::string_view head = all.substr(0, all.find(';'));
@@ -309,6 +354,15 @@ inline Findings scan(std::string_view all, bool platformer) {
     std::vector<GravPortal> gravity;
     bool reversal = false;
     std::vector<FollowRun> follows;
+    // Kairos: every 1814 with a target, decided after the pass by what its group moves.
+    struct Follow {
+        double x;
+        int group;
+        std::string why;   // empty: one the model runs (x-started, no delay)
+        bool runs;         // a speed above 0
+        double dur;
+    };
+    std::vector<Follow> f1814;
     double dxMax = speedDx(201);
     {
         static constexpr int kStartSpeed[] = {201, 200, 202, 203, 1334};   // header kA4 0..4
@@ -359,19 +413,25 @@ inline Findings scan(std::string_view all, bool platformer) {
             case 200: case 201: case 202: case 203: case 1334:
                 dxMax = std::max(dxMax, speedDx(id));
                 break;
-            case 1814:
-                if (toInt(field(obj, "51")) <= 0) break;
-                if (isOn(field(obj, "91")) || isOn(field(obj, "11")) || isOn(field(obj, "62"))) {
-                    r.unmodelled |= kFollowNotRun;
-                } else {
-                    const auto speed = field(obj, "90");
-                    const auto dur = field(obj, "10");
-                    if (speed.empty() || toNum(speed) > 0.0)
-                        follows.push_back({toNum(field(obj, "2")),
-                                           dur.empty() ? std::numeric_limits<double>::infinity()
-                                                       : toNum(dur)});
+            case 1814: {
+                const int g = toInt(field(obj, "51"));
+                if (g <= 0) break;
+                std::string why;
+                if (isOn(field(obj, "91"))) {
+                    char b[48];
+                    std::snprintf(b, sizeof b, "delayed %.2f s", toNum(field(obj, "91")));
+                    why = b;
+                } else if (isOn(field(obj, "11"))) {
+                    why = "started by touch";
+                } else if (isOn(field(obj, "62"))) {
+                    why = "started by a spawn";
                 }
+                const auto speed = field(obj, "90");
+                const auto dur = field(obj, "10");
+                f1814.push_back({toNum(field(obj, "2")), g, why, speed.empty() || toNum(speed) > 0.0,
+                                 dur.empty() ? std::numeric_limits<double>::infinity() : toNum(dur)});
                 break;
+            }
             case 2066:
                 // the loader's two refusals, read off the string (keys 11 / 62 touch / spawn, 200 player 2;
                 // checked against the export's touch / spawn / gpl columns on 457 triggers: no disagreement)
@@ -386,6 +446,79 @@ inline Findings scan(std::string_view all, bool platformer) {
             default: break;
         }
     });
+    // Kairos: what a 1814 moves is its group, and every group whose trigger reads a moved group's
+    // position (key 71: Follow, Move to a target, Rotate about a centre, Advanced Follow). It counts
+    // only if one of those groups holds an object that can touch the player -- the dp loader drops
+    // one that moves nothing it collides with (cli.hpp followy). Without `collides`, all count.
+    if (!f1814.empty()) {
+        std::unordered_map<int, std::vector<int>> carries;   // group -> the groups it moves in turn
+        std::unordered_set<int> touchable;                   // groups holding something that collides
+        auto reachFrom = [&](int group) {
+            std::vector<int> todo{group};
+            std::unordered_set<int> seen{group};
+            while (!todo.empty()) {
+                const int g = todo.back();
+                todo.pop_back();
+                if (auto it = carries.find(g); it != carries.end())
+                    for (int n : it->second)
+                        if (seen.insert(n).second) todo.push_back(n);
+            }
+            return seen;
+        };
+        if (collides) {
+            forEachObject(all, [&](std::string_view obj) {
+                const int ref = toInt(field(obj, "71")), tgt = toInt(field(obj, "51"));
+                if (ref > 0 && tgt > 0 && ref != tgt) carries[ref].push_back(tgt);
+            });
+            std::unordered_set<int> reach;
+            for (const auto& f : f1814)
+                for (int g : reachFrom(f.group)) reach.insert(g);
+            forEachObject(all, [&](std::string_view obj) {
+                const auto groups = field(obj, "57");
+                if (groups.empty() || isOn(field(obj, "121"))) return;
+                bool asked = false, hits = false;
+                size_t p = 0;
+                while (p <= groups.size()) {
+                    const size_t d = groups.find('.', p);
+                    const int g = toInt(groups.substr(p, d == std::string_view::npos ? std::string_view::npos : d - p));
+                    if (reach.count(g) && !touchable.count(g)) {
+                        if (!asked) {
+                            hits = collides(toInt(field(obj, "1")));
+                            asked = true;
+                        }
+                        if (hits) touchable.insert(g);
+                    }
+                    if (d == std::string_view::npos) break;
+                    p = d + 1;
+                }
+            });
+        }
+        auto matters = [&](int group) {
+            if (!collides) return true;
+            for (int g : reachFrom(group))
+                if (touchable.count(g)) return true;
+            return false;
+        };
+        for (const auto& f : f1814) {
+            const bool m = matters(f.group);
+            if (!f.why.empty()) {
+                char where[64];
+                std::snprintf(where, sizeof where, "x %.0f, group %d: ", f.x, f.group);
+                if (m) {
+                    r.unmodelled |= kFollowNotRun;
+                    r.notes.push_back({Severity::Bad, "Follow Player Y (" + f.why + ")",
+                                       where + f.why + ". The solver cannot run it, and it moves "
+                                                       "something the player can touch."});
+                } else {
+                    r.notes.push_back({Severity::Fine, "Follow Player Y (" + f.why + ")",
+                                       where + f.why + ", but it moves nothing the player can "
+                                                       "touch: no effect on the run."});
+                }
+            } else if (f.runs && m) {
+                follows.push_back({f.x, f.dur});
+            }
+        }
+    }
     if (gravityPortalsRefused(std::move(gravity), reversal)) r.unmodelled |= kGravityPortals;
     if (followSlotsShort(std::move(follows), dxMax)) r.unmodelled |= kFollowSlots;
     if (portals.empty()) return r;

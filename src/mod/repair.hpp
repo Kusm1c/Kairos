@@ -41,6 +41,10 @@
 //     kHorizonShort under stall -- which covers the same ground from the other end.
 #include "mod/session.hpp"
 
+// Kairos: the run stops because the level is impossible within the human limits; Kairos shows why
+// once the session is over (src/kairos/SolveWatch.cpp).
+namespace kp { void onLimitStop(const std::string& why); }
+
 namespace p1 {
 
 // ============================================================
@@ -1243,6 +1247,11 @@ inline unsigned long long g_needTrigDropped = 0;   // wide: see SolveOutcome::re
 // stopped getting anywhere without it -- the pressure first, the release later.
 inline unsigned long long g_needTrigSuspect = 0;   // wide: see SolveOutcome::resimTrig
 inline int g_stallRuns = 0;          // iterations since the run last got deeper
+// Kairos: the human-limits test. Stuck at a wall with them on, one round goes without them
+// (--minpulse, --minpressgap): if the game then gets past the wall with inputs faster than they
+// allow, the level is impossible within them and the run stops saying so (kp::onLimitStop).
+inline long long g_kLimitWall = -1;     // the wall the round without them is for, -1 = none
+inline long long g_kLimitTested = -1;   // the last wall tested, once each
 inline bool g_needUnseen = false;    // go and touch doors whose effect has not been seen
 inline int g_horizonFull = 0;        // a plan that covers the level
 inline int g_horizonNow = 0;         // ...and what is being asked for right now
@@ -2896,8 +2905,9 @@ inline std::vector<std::string> baseArgs(const std::string& out,
         a.push_back("--inputgrid");
         a.push_back(std::to_string(g_cfg.dpInputGrid));
     }
-    // Kairos: human inputs unless "Go crazy!" (every press and release lasts this long).
-    if (!Mod::get()->getSettingValue<bool>("go-crazy")) {
+    // Kairos: human inputs unless "Go crazy!" (every press and release lasts this long), and
+    // except in the round that tests whether they are the wall (g_kLimitWall).
+    if (!Mod::get()->getSettingValue<bool>("go-crazy") && g_kLimitWall < 0) {
         a.push_back("--minpulse");
         a.push_back(std::to_string(Mod::get()->getSettingValue<int64_t>("human-min-pulse")));
         // ...and no faster clicking than "max-cps" (0 = no limit).
@@ -6510,6 +6520,7 @@ inline void start(GJBaseGameLayer* l) {
         std::filesystem::remove(rejoinTracePath(), ec);
     }
     g_stallRuns = 0;
+    g_kLimitWall = g_kLimitTested = -1;   // Kairos
     g_needUnseen = false;
     if (!carry) g_iter = 0;
     g_plan.clear();
@@ -7800,6 +7811,48 @@ inline void fileCoinMissEarly(long long dt) {
     }
 }
 
+// Kairos: the human limits, when on ("go-crazy" off): the shortest press and gap, and the fewest
+// ticks between two presses (0 = no CPS limit).
+inline bool kLimitsOn(int& pulse, int& every) {
+    if (Mod::get()->getSettingValue<bool>("go-crazy")) return false;
+    pulse = (int)Mod::get()->getSettingValue<int64_t>("human-min-pulse");
+    const int64_t cps = Mod::get()->getSettingValue<int64_t>("max-cps");
+    every = cps > 0 ? (int)((240 + cps - 1) / cps) : 0;
+    return pulse > 1 || every > 1;
+}
+
+// Kairos: what the installed plan's inputs between `from` and `to` need beyond the limits, in
+// words, or "" when they keep them.
+inline std::string kLimitBreach(long long from, long long to, int pulse, int every) {
+    int press = std::numeric_limits<int>::max(), hole = press, apart = press;
+    long long lastDown = -1, lastUp = -1;
+    for (const auto& c : g_plan) {
+        if (c.step > to) break;
+        if (c.down) {
+            if (c.step >= from && lastUp >= 0) hole = std::min(hole, (int)(c.step - lastUp));
+            if (c.step >= from && lastDown >= 0) apart = std::min(apart, (int)(c.step - lastDown));
+            lastDown = c.step;
+        } else {
+            if (c.step >= from && lastDown >= 0) press = std::min(press, (int)(c.step - lastDown));
+            lastUp = c.step;
+        }
+    }
+    std::vector<std::string> need;
+    char b[96];
+    if (press < pulse) need.push_back(std::to_string(press) + "-tick presses");
+    if (hole < pulse) need.push_back(std::to_string(hole) + "-tick gaps");
+    if (every > 1 && apart < every) {
+        snprintf(b, sizeof(b), "presses %.2f s apart (%.0f CPS)", apart / 240.0, 240.0 / apart);
+        need.push_back(b);
+    }
+    if (need.empty()) return {};
+    std::string s = "it needed ";
+    for (size_t i = 0; i < need.size(); ++i) s += (i ? (i + 1 == need.size() ? " and " : ", ") : "") + need[i];
+    s += ". Your limits: " + std::to_string(pulse) + "-tick presses and gaps";
+    if (every > 1) s += ", " + std::to_string(Mod::get()->getSettingValue<int64_t>("max-cps")) + " CPS";
+    return s + ".";
+}
+
 inline void onDeath(long long dt, float deathX) {
     // Consumed first, whichever way this returns, so a coin miss cannot leak into a later death.
     const bool coinMissPost = g_coinMissPostPending;
@@ -8185,6 +8238,27 @@ inline void onDeath(long long dt, float deathX) {
     // slot forever. The veto and the portal hint still fire off a wedge; only the depth
     // ranking is closed to it.
     if (deeper) {
+        // Kairos: the round without the human limits got past their wall. With inputs faster than
+        // they allow, the level is impossible within them: stop, saying where and what it took.
+        if (g_kLimitWall >= 0) {
+            const long long wall = g_kLimitWall;
+            g_kLimitWall = -1;
+            int pulse = 0, every = 0;
+            const std::string need = kLimitsOn(pulse, every) ? kLimitBreach(wall - 480, dt, pulse, every)
+                                                             : std::string();
+            if (!need.empty()) {
+                char where[128];
+                snprintf(where, sizeof(where), "At x %.0f (%.2f s) the level was only passed without them: ",
+                         (double)g_bestDeathX, wall / 240.0);
+                kp::onLimitStop(where + need);
+                g_stop = true;
+                g_hudPhase = "stopped: impossible with the human limits";
+                giveUp(("impossible with the human limits - " + std::string(where) + need).c_str(), "kairos_limits");
+                return;
+            }
+            writeResult("dpsolve:   [kairos] past the wall without the human limits, with inputs that keep "
+                        "them - not the limits; they are back on");
+        }
         // The run got deeper. Whatever was turned on to get it moving has done its job, so the
         // expensive part of it is given back -- the full lookahead costs nothing while the model
         // is right, and a run that keeps a bounded one after it starts working pays for it on
@@ -8310,6 +8384,21 @@ inline void onDeath(long long dt, float deathX) {
                  "plan (t=%lld), backoff %d", g_bestDeath, g_bestDeath, g_curBackoff);
         writeResult(b);
         ++g_stallRuns;
+        // Kairos: stuck with the human limits on, the next round goes without them, once per wall.
+        // A round without them that got no deeper says they are not the wall.
+        {
+            int pulse = 0, every = 0;
+            if (g_kLimitWall >= 0) {
+                g_kLimitWall = -1;
+                writeResult("dpsolve:   [kairos] the round without the human limits got no deeper - "
+                            "not the limits; they are back on");
+            } else if (g_stallRuns >= 2 && g_kLimitTested != g_bestDeath && kLimitsOn(pulse, every)) {
+                g_kLimitWall = g_kLimitTested = g_bestDeath;
+                snprintf(b, sizeof(b), "dpsolve:   [kairos] stuck at t=%lld with the human limits on - "
+                         "one round without them", g_bestDeath);
+                writeResult(b);
+            }
+        }
         // Getting nowhere. Two things are worth trying, in the order of what they cost, and
         // both are things the loop can tell it needs from the run itself rather than from a
         // table of levels.
