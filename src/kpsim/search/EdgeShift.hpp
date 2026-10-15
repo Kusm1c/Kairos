@@ -20,7 +20,12 @@ struct Shift {
     enum Result { Passed, Failed, Blocked } result = Failed;   // Blocked: out of order or against `valid`
     Plan plan;               // Passed: the plan that passed
     bool followed = false;   // ... with the next inputs re-timed
+    Tick death = 0;          // Failed: when the plain shift died
+    int retimed = 0;         // trials spent re-timing the next inputs
 };
+
+// Hold i and its neighbours still in order.
+bool holdOrdered(const Holds& h, size_t i);
 
 // Edge moved by d; if that alone fails, the next inputs on the button re-timed as a player
 // correcting it would. `valid` adds rules to the hold order (human limits).

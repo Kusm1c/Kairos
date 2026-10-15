@@ -1,6 +1,7 @@
 #pragma once
 #include "Engine.hpp"
 
+#include <set>
 #include <vector>
 
 namespace kpsim::search {
@@ -43,6 +44,7 @@ private:
     Plan m_plan;
     std::vector<uint64_t> m_trace;
     size_t m_rejected = 0, m_accepted = 0;
+    std::set<Tick> m_bad;   // ticks whose snapshot replayed differently
 };
 
 // First tick where the two plans differ (kNever if equal).

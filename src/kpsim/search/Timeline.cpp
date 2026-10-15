@@ -16,7 +16,7 @@ RunResult Timeline::advance(const Plan& plan, Tick until, std::vector<uint64_t>*
         RunResult r = m_engine.run(plan, stop, &rec);
         if (r.outcome != Outcome::Reached || stop == until) return r;
         // Buttons up on both sides: a restore needs no input edge.
-        if (m_enabled && !plan.anyHeldAt(stop) && !plan.anyHeldAt(stop + 1) &&
+        if (m_enabled && !m_bad.count(stop) && !plan.anyHeldAt(stop) && !plan.anyHeldAt(stop + 1) &&
             (m_snaps.empty() || m_snaps.back().tick < stop)) {
             int id = m_engine.save();
             if (id >= 0) m_snaps.push_back({stop, id, false});
@@ -45,7 +45,7 @@ Tick Timeline::seek(Tick t) {
         if (!ok) {
             m_engine.restoreMismatch(it->tick, diverged);
             // Mostly failing: this level's snapshots are not trustworthy.
-            if (++m_rejected >= 4 && m_rejected > m_accepted) setEnabled(false);
+            if (m_bad.insert(it->tick).second && ++m_rejected >= 4 && m_rejected > m_accepted) setEnabled(false);
         } else if (!it->checked) {
             it->checked = true;
             ++m_accepted;

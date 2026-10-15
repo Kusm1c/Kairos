@@ -1,4 +1,5 @@
 #include "Rhythm.hpp"
+#include "UiText.hpp"
 
 #include <Geode/modify/GJBaseGameLayer.hpp>
 #include <Geode/modify/PlayLayer.hpp>
@@ -135,25 +136,25 @@ private:
         m_pxPerTick = (float)Mod::get()->getSettingValue<int64_t>("rhythm-speed") / 240.f;
         buildNotes(plan, w);
 
+        // A narrow column at the left edge, behind the player: notes fall to the hit line.
+        // Two players: P1 left lane, P2 right lane.
         const auto win = CCDirector::get()->getWinSize();
         m_lanes = plan.holds2.empty() ? 1 : 2;
-        m_laneH = 22.f;
-        m_trackX = 10.f;
-        m_trackW = win.width - 20.f;
-        m_trackY = 8.f;
-        m_hitX = m_trackX + m_trackW * 0.22f;
+        m_laneW = 20.f;
+        m_trackX = 6.f;
+        m_trackY = 44.f;
+        m_trackH = win.height - m_trackY - 52.f;
+        m_hitY = m_trackY + 36.f;
 
         m_draw = CCDrawNode::create();
         this->addChild(m_draw);
 
-        m_grade = label("bigFont.fnt", 0.45f, {m_hitX, m_trackY + m_lanes * m_laneH + 30.f});
-        m_offset = label("chatFont.fnt", 0.55f, {m_hitX, m_trackY + m_lanes * m_laneH + 14.f});
-        m_hud = label("chatFont.fnt", 0.55f, {m_trackX + m_trackW - 6.f, m_trackY + m_lanes * m_laneH + 12.f});
-        m_hud->setAnchorPoint({1.f, 0.5f});
-        m_hint = label("chatFont.fnt", 0.5f, {m_trackX + 6.f, m_trackY + m_lanes * m_laneH + 12.f});
-        m_hint->setAnchorPoint({0.f, 0.5f});
-        m_hint->setString(m_known ? (demo ? "Demo: the macro plays itself" : "Click with the notes")
-                                  : "No frame windows for this macro: judged on +-3 ticks");
+        m_grade = label("bigFont.fnt", 0.4f, {m_trackX, 30.f});
+        m_offset = label("chatFont.fnt", 0.45f, {m_trackX, 14.f});
+        m_hud = label("chatFont.fnt", 0.45f, {m_trackX, m_trackY + m_trackH + 14.f});
+        m_hint = label("chatFont.fnt", 0.45f, {m_trackX, m_trackY + m_trackH + 30.f});
+        setText(m_hint, m_known ? (demo ? "Demo: the macro plays itself" : "Click with the notes")
+                                : "No frame windows: judged on +-3 ticks");
         m_hint->setOpacity(170);
         m_hint->runAction(CCSequence::create(CCDelayTime::create(5.f), CCFadeOut::create(1.f), nullptr));
         this->scheduleUpdate();
@@ -164,9 +165,17 @@ private:
     CCLabelBMFont* label(const char* font, float scale, CCPoint pos) {
         auto* l = CCLabelBMFont::create("", font);
         l->setScale(scale);
+        l->setAnchorPoint({0.f, 0.5f});
         l->setPosition(pos);
         this->addChild(l, 2);
         return l;
+    }
+
+    // Kept clear of the player: never wider than kTextW.
+    static constexpr float kTextW = 130.f;
+    void setText(CCLabelBMFont* l, const std::string& s) {
+        l->setString(s.c_str());
+        fitLabel(l, kTextW, 0.45f);
     }
 
     void buildNotes(const Plan& plan, const WindowReport& w) {
@@ -250,9 +259,8 @@ private:
                                                               nullptr),
                                            nullptr));
         if (n.grade != Grade::Missed) {
-            m_offset->setString(fmt::format("{:+.0f} ms ({:+.0f}t)  window -{:.0f}/+{:.0f}", n.dev * kMsPerTick,
-                                            n.dev, n.early, n.late)
-                                    .c_str());
+            setText(m_offset, fmt::format("{:+.0f} ms ({:+.0f}t)  -{:.0f}/+{:.0f}", n.dev * kMsPerTick, n.dev,
+                                          n.early, n.late));
             m_offset->setColor(gradeColor(n.grade));
         }
         refreshHud();
@@ -262,7 +270,7 @@ private:
         const Tally t = tally();
         const double acc = t.judged ? (t.perfect + 0.6 * t.good) * 100.0 / t.judged : 100.0;
         const double mean = t.clicked ? t.sum / t.clicked * kMsPerTick : 0.0;
-        m_hud->setString(fmt::format("{}x   {:.1f}%   {:+.1f} ms   {}/{}", m_combo, acc, mean, t.judged, m_total).c_str());
+        setText(m_hud, fmt::format("{}x  {:.1f}%  {:+.1f} ms  {}/{}", m_combo, acc, mean, t.judged, m_total));
     }
 
     void update(float) override {
@@ -289,41 +297,44 @@ private:
         draw(t);
     }
 
-    float xOf(double tick, double t) const { return m_hitX + (float)((tick - t) * m_pxPerTick); }
+    float yOf(double tick, double t) const { return m_hitY + (float)((tick - t) * m_pxPerTick); }
+    float top() const { return m_trackY + m_trackH; }
 
+    // Clipped to the track's height.
     void rect(float x0, float y0, float x1, float y1, ccColor4F fill) {
-        x0 = std::max(x0, m_trackX);
-        x1 = std::min(x1, m_trackX + m_trackW);
-        if (x1 <= x0) return;
+        if (y1 < y0) std::swap(y0, y1);
+        y0 = std::max(y0, m_trackY);
+        y1 = std::min(y1, top());
+        if (y1 <= y0 || x1 <= x0) return;
         CCPoint v[4] = {{x0, y0}, {x1, y0}, {x1, y1}, {x0, y1}};
         m_draw->drawPolygon(v, 4, fill, 0.f, fill);
     }
 
     void draw(double t) {
         m_draw->clear();
-        const float top = m_trackY + m_lanes * m_laneH;
+        const float right = m_trackX + m_lanes * m_laneW;
         // Panel and lanes.
-        rect(m_trackX, m_trackY - 2.f, m_trackX + m_trackW, top + 2.f, rgba(12, 14, 24, 0.72f));
+        rect(m_trackX - 2.f, m_trackY, right + 2.f, top(), rgba(12, 14, 24, 0.72f));
         for (int l = 1; l < m_lanes; ++l)
-            rect(m_trackX, m_trackY + l * m_laneH - 0.5f, m_trackX + m_trackW, m_trackY + l * m_laneH + 0.5f,
+            rect(m_trackX + l * m_laneW - 0.5f, m_trackY, m_trackX + l * m_laneW + 0.5f, top(),
                  rgba(255, 255, 255, 0.12f));
 
-        const double from = t - (m_hitX - m_trackX) / m_pxPerTick - 1.0;
-        const double to = t + (m_trackX + m_trackW - m_hitX) / m_pxPerTick + 1.0;
+        const double from = t - (m_hitY - m_trackY) / m_pxPerTick - 1.0;
+        const double to = t + (top() - m_hitY) / m_pxPerTick + 1.0;
         for (const auto& n : m_notes) {
             if (n.press && n.holdEnd < from) continue;
             if (!n.press && n.tick < from) continue;
             if (n.tick > to) break;
-            const int lane = m_lanes == 2 ? 1 - n.channel : 0;
-            const float y0 = m_trackY + lane * m_laneH + 3.f, y1 = y0 + m_laneH - 6.f;
-            const float x = xOf(n.tick, t);
+            const int lane = m_lanes == 2 ? n.channel : 0;
+            const float x0 = m_trackX + lane * m_laneW + 3.f, x1 = x0 + m_laneW - 6.f;
+            const float y = yOf(n.tick, t);
             if (n.press) {   // the hold, then its press
                 const ccColor4F bar = n.channel ? rgba(255, 170, 80, 0.30f) : rgba(80, 200, 255, 0.30f);
-                rect(x, y0 + 4.f, xOf(n.holdEnd, t), y1 - 4.f, bar);
+                rect(x0 + 4.f, y, x1 - 4.f, yOf(n.holdEnd, t), bar);
             }
             if (n.counts) {
                 const double width = n.early + n.late + 1.0;
-                rect(xOf(n.tick - n.early - 0.5, t), y0, xOf(n.tick + n.late + 0.5, t), y1,
+                rect(x0, yOf(n.tick - n.early - 0.5, t), x1, yOf(n.tick + n.late + 0.5, t),
                      n.known ? widthColor(width, n.judged ? 0.18f : 0.42f) : rgba(180, 180, 200, 0.25f));
             }
             ccColor4F mark = rgba(255, 255, 255, n.counts ? 0.95f : 0.4f);
@@ -331,29 +342,29 @@ private:
                 auto c = gradeColor(n.grade);
                 mark = rgba(c.r, c.g, c.b, 0.95f);
             }
-            const float w = n.press ? 2.f : 1.f;
-            rect(x - w, n.press ? y0 - 1.f : y0 + 3.f, x + w, n.press ? y1 + 1.f : y1 - 3.f, mark);
+            const float h = n.press ? 2.f : 1.f;
+            rect(n.press ? x0 - 1.f : x0 + 3.f, y - h, n.press ? x1 + 1.f : x1 - 3.f, y + h, mark);
         }
         // Hit line.
-        rect(m_hitX - 3.f, m_trackY - 2.f, m_hitX + 3.f, top + 2.f, rgba(255, 255, 255, 0.18f));
-        rect(m_hitX - 1.f, m_trackY - 2.f, m_hitX + 1.f, top + 2.f, rgba(255, 255, 255, 0.95f));
-        drawErrorBar(top);
+        rect(m_trackX - 2.f, m_hitY - 3.f, right + 2.f, m_hitY + 3.f, rgba(255, 255, 255, 0.18f));
+        rect(m_trackX - 2.f, m_hitY - 1.f, right + 2.f, m_hitY + 1.f, rgba(255, 255, 255, 0.95f));
+        drawErrorBar(right + 6.f);
     }
 
-    // The last window, centred, and the latest offsets in it.
-    void drawErrorBar(float top) {
+    // Beside the hit line: the last window and the latest offsets in it (early above).
+    void drawErrorBar(float x) {
         if (m_recent.empty()) return;
-        const float cx = m_trackX + m_trackW * 0.5f, y = top + 22.f, px = 7.f;
+        const float cy = m_hitY, px = 3.f;
         const auto& last = m_recent.back();
-        rect(cx - (float)(last.early + 0.5) * px, y - 3.f, cx + (float)(last.late + 0.5) * px, y + 3.f,
+        rect(x + 2.f, cy - (float)(last.late + 0.5) * px, x + 6.f, cy + (float)(last.early + 0.5) * px,
              widthColor(last.early + last.late + 1.0, 0.55f));
-        rect(cx - 0.75f, y - 7.f, cx + 0.75f, y + 7.f, rgba(255, 255, 255, 0.9f));
+        rect(x - 1.f, cy - 0.75f, x + 9.f, cy + 0.75f, rgba(255, 255, 255, 0.9f));
         float a = 0.25f;
         for (const auto& r : m_recent) {
             a = std::min(1.f, a + 0.06f);
             auto c = gradeColor(r.grade);
-            const float x = cx + (float)r.dev * px;
-            rect(x - 1.f, y - 9.f, x + 1.f, y + 9.f, rgba(c.r, c.g, c.b, a));
+            const float y = cy - (float)r.dev * px;
+            rect(x - 2.f, y - 1.f, x + 10.f, y + 1.f, rgba(c.r, c.g, c.b, a));
         }
     }
 
@@ -392,7 +403,7 @@ private:
     std::vector<Note> m_notes;
     CCDrawNode* m_draw = nullptr;
     CCLabelBMFont *m_grade = nullptr, *m_offset = nullptr, *m_hud = nullptr, *m_hint = nullptr;
-    float m_pxPerTick = 1.5f, m_laneH = 22.f, m_trackX = 0, m_trackW = 0, m_trackY = 0, m_hitX = 0;
+    float m_pxPerTick = 1.5f, m_laneW = 20.f, m_trackX = 0, m_trackY = 0, m_trackH = 0, m_hitY = 0;
     int m_lanes = 1;
     double m_lastNow = 0;
     double m_clock = 0;

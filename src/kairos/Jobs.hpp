@@ -43,4 +43,12 @@ std::filesystem::path reportPath(GJGameLevel* level);
 std::filesystem::path statsPath(GJGameLevel* level);
 std::filesystem::path outputDir();
 
+// The solver's model of the level just solved: the level, its recordings, its arguments
+// (SolverState.cpp). Kept per level in `dir`.
+void saveModelWorld(int levelId, const std::filesystem::path& dir);
+// `plan` replayed in that model: the tick it dies at, -1 if it survives, -2 if it cannot run.
+long long modelReplay(const std::filesystem::path& dir, const kpsim::macro::Plan& plan, double& seconds,
+                      std::string& error);
+std::filesystem::path modelDir(GJGameLevel* level);
+
 } // namespace kp

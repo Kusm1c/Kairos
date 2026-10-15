@@ -77,8 +77,10 @@ void poll() {
             std::error_code ec;
             auto path = solverSolutionPath(g.level);
             if (std::filesystem::exists(path, ec) &&
-                (!g.had || std::filesystem::last_write_time(path, ec) > g.before))
+                (!g.had || std::filesystem::last_write_time(path, ec) > g.before)) {
+                saveModelWorld((int)g.level->m_levelID, modelDir(g.level));
                 offer(g.level);
+            }
         }
         g.limitStop.clear();
     }

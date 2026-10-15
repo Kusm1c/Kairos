@@ -5,20 +5,20 @@
 namespace kpsim::search {
 namespace {
 
-constexpr int kFollowUps = 2;   // next inputs re-timed after a mistimed one (same shift +-2)
+constexpr int kFollowUps = 4;   // next inputs re-timed after a mistimed one (same shift +-2)
+constexpr Tick kProgress = 8;   // a re-timing must push the death this much later to go on
 
-// Hold i and its neighbours still in order.
-bool ordered(const Holds& h, size_t i) {
+} // namespace
+
+bool holdOrdered(const Holds& h, size_t i) {
     if (h[i].press < 1 || h[i].release <= h[i].press) return false;
     if (i && h[i - 1].release >= h[i].press) return false;
     return i + 1 >= h.size() || h[i].release < h[i + 1].press;
 }
 
-} // namespace
-
 Shift shiftEdge(const Plan& plan, EdgeRef e, int d, const std::function<Try(const Plan&)>& attempt,
                 const std::function<bool(const Holds&, size_t)>& valid) {
-    auto ok = [&](const Holds& h, size_t i) { return ordered(h, i) && (!valid || valid(h, i)); };
+    auto ok = [&](const Holds& h, size_t i) { return holdOrdered(h, i) && (!valid || valid(h, i)); };
     Shift out;
     Plan p = plan;
     Holds& hs = p.channel(e.ch);
@@ -40,6 +40,7 @@ Shift shiftEdge(const Plan& plan, EdgeRef e, int d, const std::function<Try(cons
         return out;
     }
     // The next inputs, re-timed before the death.
+    out.death = r.death;
     Tick death = r.death;
     size_t hold = e.hold;
     bool press = e.press;
@@ -51,26 +52,36 @@ Shift shiftEdge(const Plan& plan, EdgeRef e, int d, const std::function<Try(cons
         const Tick was = at;
         std::optional<Plan> best;
         Tick bestDeath = 0;
-        for (int s : {0, -1, 1, -2, 2}) {
+        auto tryAt = [&](int s) {
             const int64_t c = (int64_t)was + d + s;
-            if (c == (int64_t)was || c < 1 || c > (int64_t)death) continue;
+            if (c == (int64_t)was || c < 1 || c > (int64_t)death) return false;
             at = (Tick)c;
+            bool passed = false;
             if (ok(hs, hold)) {
                 Try f = attempt(p);
-                if (f.ok) {
-                    out.result = Shift::Passed;
-                    out.plan = std::move(p);
-                    out.followed = true;
-                    return out;
-                }
-                if (f.death > bestDeath) {
+                ++out.retimed;
+                passed = f.ok;
+                if (!passed && f.death > bestDeath) {
                     bestDeath = f.death;
                     best = p;
                 }
             }
-            at = was;
+            if (!passed) at = was;
+            return passed;
+        };
+        bool passed = false;
+        for (int s : {0, -1, 1})
+            if (!passed) passed = tryAt(s);
+        if (!passed && bestDeath <= death)   // no better yet: a wider correction
+            for (int s : {-2, 2})
+                if (!passed) passed = tryAt(s);
+        if (passed) {
+            out.result = Shift::Passed;
+            out.plan = std::move(p);
+            out.followed = true;
+            return out;
         }
-        if (!best) break;
+        if (!best || bestDeath < death + kProgress) break;
         p = std::move(*best);
         death = bestDeath;
     }

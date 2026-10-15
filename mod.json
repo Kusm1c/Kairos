@@ -22,13 +22,13 @@
 			"name": "Kairos tools (K button)",
 			"type": "title"
 		},
-		"window-max-shift": {
-			"name": "Frame windows cap (ticks)",
-			"description": "How far each press and release is moved each way, in 240 Hz ticks (20 = 83 ms). A window that reaches it shows as 20+ (later) or 20- (earlier). Larger is slower.",
+		"window-cap": {
+			"name": "Frame windows cap (ticks each way)",
+			"description": "How far each press and release is tried each way, in 240 Hz ticks. With 5, a window wider than 10 ticks shows as 11+, like NaNDL. Larger is slower.",
 			"type": "int",
-			"default": 20,
+			"default": 5,
 			"min": 1,
-			"max": 240
+			"max": 20
 		},
 		"windows-strict": {
 			"name": "Frame windows: strict mode",

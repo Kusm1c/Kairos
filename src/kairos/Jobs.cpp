@@ -116,6 +116,20 @@ const char* outcomeName(Outcome o) {
     return o == Outcome::Finished ? "finished" : o == Outcome::Died ? "died" : "alive";
 }
 
+// The .gdr2 and the solver's plan (Replay), whose first version stays as .raw.txt.
+std::filesystem::path saveSolution(GJGameLevel* level, const Plan& plan) {
+    auto path = solutionPath(level);
+    kpsim::macro::writeFile(path, kpsim::macro::writeGdr2(plan, (uint32_t)level->m_levelID,
+                                                           std::string(level->m_levelName)));
+    auto solver = solverSolutionPath(level);
+    auto raw = solver;
+    raw.replace_extension(".raw.txt");
+    std::error_code ec;
+    if (std::filesystem::exists(solver) && !std::filesystem::exists(raw)) std::filesystem::copy_file(solver, raw, ec);
+    std::ofstream(solver) << kpsim::macro::writeSolverPlan(plan);
+    return path;
+}
+
 std::string windowsReport(GJGameLevel* level, const JobRequest& req, const kpsim::search::WindowReport& r) {
     std::string out = fmt::format("Frame windows - {} ({})\nmacro: {}\nbase run: {} at tick {}\n\n",
                                   std::string(level->m_levelName), (int)level->m_levelID, req.source,
@@ -146,6 +160,21 @@ std::string windowsReport(GJGameLevel* level, const JobRequest& req, const kpsim
                        r.followed);
     if (st.precision > 0)
         out += fmt::format("Precision for a 24 h clear: {:.1f} sigma/s (nandl.pages.dev base formula)\n", st.precision);
+    if (!r.complete)
+        out += fmt::format("Stopped after {} of {} edges: the rest was not measured\n", r.edges.size(), r.total);
+    if (r.centered && r.complete)
+        out += fmt::format("{} inputs moved to the middle of their window before the next was measured{}\n",
+                           r.centered, r.verified ? "" : " (the result did not finish from the start)");
+    // A death right after the input: truly that tight. Far later: the correction fell short.
+    std::string fp;
+    for (const auto& w : r.edges)
+        for (int side = 0; side < 2; ++side) {
+            const int room = side ? w.late : w.early, death = side ? w.lateDeath : w.earlyDeath;
+            if (room == 0 && death >= 0)
+                fp += fmt::format("  {} {} {}1 tick: died {} ticks later\n", name(w.player, w.hold),
+                                  w.press ? "press" : "release", side ? "+" : "-", death);
+        }
+    if (!fp.empty()) out += "\nNo room on one side:\n" + fp;
     for (int p = 0; p < 2; ++p)
         for (size_t i = 0; i < r.removable[p].size(); ++i)
             if (r.removable[p][i]) out += fmt::format("click {} is not needed\n", name(p, i));
@@ -240,13 +269,19 @@ private:
                                                 : goal == "Most lenient windows"
                                                     ? kpsim::search::SolveGoal::LenientWindows
                                                     : kpsim::search::SolveGoal::Balanced);
-            o.maxShift = (int)Mod::get()->getSettingValue<int64_t>("window-max-shift");
+            o.maxShift = (int)Mod::get()->getSettingValue<int64_t>("window-cap");
             o.rules = humanRules();
             kpsim::search::optimizePlan(*m_engine, m_request.plan, o, m_opt);
         } else {
             kpsim::search::WindowOptions o;
-            o.maxShift = (int)Mod::get()->getSettingValue<int64_t>("window-max-shift");
+            o.maxShift = (int)Mod::get()->getSettingValue<int64_t>("window-cap");
             o.strict = Mod::get()->getSettingValue<bool>("windows-strict");
+            // Feasibility of model-guided windows: does the solver's model replay this plan?
+            double secs = 0;
+            std::string err;
+            const long long died = modelReplay(modelDir(m_layer->m_level), m_request.plan, secs, err);
+            log::info("[kp] model replay: {} ({:.1f}s)",
+                      died == -2 ? err : died < 0 ? std::string("survived") : fmt::format("died at step {}", died), secs);
             kpsim::search::findWindows(*m_engine, m_request.plan, o, m_windows);
         }
     }
@@ -332,9 +367,12 @@ private:
                                              m_path.solved, m_path.furthest, m_path.plan.presses(), m_path.trials,
                                              m_path.pruned, m_path.backtracks)
                                : fmt::format("windows edges={} trials={} cut={} complete={} followed={} "
+                                             "centered={} verified={} retimed={} predicted={} splices={} "
                                              "frame-perfect 60/120/240 fps={:.0f}/{:.0f}/{} nandl-precision={:.1f}",
                                              m_windows.edges.size(), m_windows.trials, m_windows.pruned,
-                                             m_windows.complete, m_windows.followed, fp.perfectAt[0],
+                                             m_windows.complete, m_windows.followed, m_windows.centered,
+                                             m_windows.verified, m_windows.retimed, m_windows.predicted,
+                                             m_windows.splices, fp.perfectAt[0],
                                              fp.perfectAt[1], fp.framePerfect, fp.precision);
         log::info("[kp] {} ({}) {}{}{} | {:.1f}s, {} steps ({:.0f}k/s), {} saves, {} restores ({:.2f} ms avg), "
                   "{} snapshot mismatches",
@@ -380,19 +418,7 @@ private:
             if (m_opt.rejected)
                 note += fmt::format("\n<cy>{} changes did not hold up in the full replay and were dropped.</c>",
                                     m_opt.rejected);
-            auto path = solutionPath(level);
-            kpsim::macro::writeFile(path, kpsim::macro::writeGdr2(m_opt.plan, (uint32_t)level->m_levelID,
-                                                                   std::string(level->m_levelName)));
-            // The solver's Replay plays it too; its raw plan is kept beside.
-            {
-                auto solver = solverSolutionPath(level);
-                auto raw = solver;
-                raw.replace_extension(".raw.txt");
-                std::error_code ec;
-                if (std::filesystem::exists(solver) && !std::filesystem::exists(raw))
-                    std::filesystem::copy_file(solver, raw, ec);
-                std::ofstream(solver) << kpsim::macro::writeSolverPlan(m_opt.plan);
-            }
+            auto path = saveSolution(level, m_opt.plan);
             Plan plan = m_opt.plan;
             PlayLayer* layer = m_layer;
             auto ticks = [](int w) { return w < 0 ? std::string("comfortable") : fmt::format("{} ticks", w); };
@@ -437,15 +463,27 @@ private:
             std::error_code ec;
             std::filesystem::create_directories(path.parent_path(), ec);
             std::ofstream(path) << text;
+            // The centred route replaces the solution once it finished from the start.
+            const bool saved = m_windows.verified && m_windows.centered;
+            if (saved) saveSolution(level, m_windows.plan);
+            const Plan& measured = saved || !m_windows.centered ? m_windows.plan : m_request.plan;
             std::ofstream(statsPath(level))
-                << kpsim::search::writeWindowFile(m_windows, m_request.source, m_request.plan.fingerprint());
+                << kpsim::search::writeWindowFile(m_windows, m_request.source, measured.fingerprint());
+            if (m_windows.centered && m_windows.complete)
+                note += saved ? fmt::format("\n<cg>{} inputs moved to the middle of their window; saved as the "
+                                            "solution.</c>", m_windows.centered)
+                              : std::string("\n<cr>The centred route did not finish from the start; nothing was "
+                                            "saved.</c>");
             const auto st = kpsim::search::windowStats(m_windows, 1.0);
             auto windows = m_windows;
             auto source = m_request.source;
             createQuickPopup("Frame windows",
                              fmt::format("{}{} edges. Frame-perfect at 60 / 120 / 240 FPS: {:.0f} / {:.0f} / {}.\n"
                                          "Base run {} at tick {}.\nReport: {}{}",
-                                         m_windows.complete ? "" : "<cy>Partial:</c> ", m_windows.edges.size(),
+                                         m_windows.complete ? ""
+                                                            : fmt::format("<cy>Stopped, {} of {} measured:</c> ",
+                                                                          m_windows.edges.size(), m_windows.total),
+                                         m_windows.edges.size(),
                                          st.perfectAt[0], st.perfectAt[1], st.framePerfect,
                                          outcomeName(m_windows.base.outcome), m_windows.base.tick, path.string(), note),
                              "OK", "Stats", [windows, source](FLAlertLayer*, bool stats) {
@@ -497,6 +535,7 @@ std::filesystem::path solutionPath(GJGameLevel* level) { return outputDir() / "s
 std::filesystem::path solverSolutionPath(GJGameLevel* level) {
     return outputDir() / ("solution_lv" + std::to_string((int)level->m_levelID) + "_dp.txt");
 }
+std::filesystem::path modelDir(GJGameLevel* level) { return outputDir() / "model" / std::to_string((int)level->m_levelID); }
 std::filesystem::path statsPath(GJGameLevel* level) { return outputDir() / "windows" / (fileStem(level) + ".kw"); }
 std::filesystem::path reportPath(GJGameLevel* level) { return outputDir() / "windows" / (fileStem(level) + ".txt"); }
 
