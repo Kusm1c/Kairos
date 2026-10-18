@@ -1043,12 +1043,12 @@ inline int searchLayers(E& e, const Rules& rules, SearchResult& out) {
                     sl.lo = (int)nxt.size() - 1;
                 }
                 finish(nxt[(size_t)sl.lo]);
-            } else if (g_fewPress) {
-                // Kairos: --fewpress, at the same vy the state with fewer inputs takes the slot
+            } else if (dp::slotTieBreak()) {
+                // Kairos: --fewpress / --roomy, at the same vy the lower slotScore takes the slot
                 // (phase 2p does the same).
                 const int slot = s.vy >= nxt[(size_t)sl.hi].vy - 1e-9 ? sl.hi
                                  : s.vy <= nxt[(size_t)sl.lo].vy + 1e-9 ? sl.lo : -1;
-                if (slot >= 0 && s.inputs < nxt[(size_t)slot].inputs) finish(nxt[(size_t)slot]);
+                if (slot >= 0 && dp::slotScore(s) < dp::slotScore(nxt[(size_t)slot])) finish(nxt[(size_t)slot]);
             }
         };
 
@@ -1316,7 +1316,7 @@ inline int searchLayers(E& e, const Rules& rules, SearchResult& out) {
             const int input = (int)(i & 1);
             // May the button change on this tick (model.hpp edgeLocked)?
             const bool edgeLocked = model.edgeLocked(s, gridNow, K.t);
-            if (edgeLocked && input != (int)s.action) return;
+            if (edgeLocked && input != dp::heldLevel(s)) return;   // Kairos: heldLevel
             // ...and NOT next to a toggle block it has not fired (nearPressBox), which the
             // button fires: SubZero 4003's uid 4001 is passed by an airborne cube, so with
             // the pressed child pruned no state ever entered it (2026-09-24).
@@ -1328,7 +1328,7 @@ inline int searchLayers(E& e, const Rules& rules, SearchResult& out) {
                 && !s.dashing && !(s.dual && s.dashing2)   // --dualdash
                 && !nearPressBox(s) && !nearCtrlHoldBox((double)s.xAbs) && !g_airPress
                 && !nearHoldTap((double)s.xAbs)   // --holdtap (object.hpp)
-                && !(edgeLocked && s.action == 1))
+                && !(edgeLocked && dp::heldLevel(s) == 1))   // Kairos: heldLevel
                 return;
             // --latgap: no edge on a tick GD cannot put one (model.hpp inputAllowed)
             if (!model.inputAllowed(s, input, gridNow, K.t))
@@ -1370,7 +1370,8 @@ inline int searchLayers(E& e, const Rules& rules, SearchResult& out) {
             // the goal pick below; nothing else looks at it.
             if (!dead && kid.s.tight < 0xffff
                 && tightHere(near, (double)kid.s.xAbs, (double)kid.s.y,
-                             playerHalf(kid.s.mode, kid.s.mini != 0), g_tightPx))   // Kairos: --tightpx
+                             g_roomy ? hazardHalfFor(kid.s.mode, kid.s.mini) : playerHalf(kid.s.mode, kid.s.mini != 0),
+                             g_tightPx, g_roomy))   // Kairos: --tightpx, --roomy
                 ++kid.s.tight;
             kid.dead = dead ? 1 : 0;
             kid.valid = 1;
@@ -1440,11 +1441,12 @@ inline int searchLayers(E& e, const Rules& rules, SearchResult& out) {
                 auto pressedFrom = [&](const Child& rel) {
                     Child k = rel;
                     k.s.action = 1;
+                    k.s.heldSeed = 0;   // Kairos
                     if (g_minPulse > 1)
-                        k.s.edgeAge = (p.action != 1)
+                        k.s.edgeAge = (dp::heldLevel(p) != 1)   // Kairos: heldLevel
                                           ? 0 : (uint8_t)std::min(254, (int)p.edgeAge + 1);
                     if (g_minPressGap > 1)   // Kairos: --minpressgap
-                        k.s.pressAge = (p.action != 1)
+                        k.s.pressAge = (dp::heldLevel(p) != 1)
                                            ? 0 : (uint8_t)std::min(254, (int)p.pressAge + 1);
                     if (g_fewPress)   // Kairos: --fewpress
                         k.s.inputs = (uint16_t)std::min(0xffff, (int)p.inputs + (p.action != 1 ? 1 : 0));
@@ -1642,18 +1644,18 @@ inline int searchLayers(E& e, const Rules& rules, SearchResult& out) {
                             r.loIdx = i;
                             r.loVy = vy;
                             accepted = true;
-                        } else if (g_fewPress) {
-                            // Kairos: --fewpress, emit()'s same-vy rule. One slot so far: both reps.
-                            const uint16_t in = kids[i].s.inputs;
+                        } else if (dp::slotTieBreak()) {
+                            // Kairos: --fewpress / --roomy, emit()'s same-vy rule. One slot so far: both reps.
+                            const uint32_t in = dp::slotScore(kids[i].s);
                             if ((double)vy >= (double)r.hiVy - 1e-9) {
-                                if (in < kids[r.hiIdx].s.inputs) {
+                                if (in < dp::slotScore(kids[r.hiIdx].s)) {
                                     if (r.bOrd == kNone) { r.loIdx = i; r.loVy = vy; }
                                     r.hiIdx = i;
                                     r.hiVy = vy;
                                     accepted = true;
                                 }
                             } else if ((double)vy <= (double)r.loVy + 1e-9) {
-                                if (in < kids[r.loIdx].s.inputs) {
+                                if (in < dp::slotScore(kids[r.loIdx].s)) {
                                     if (r.bOrd == kNone) { r.hiIdx = i; r.hiVy = vy; }
                                     r.loIdx = i;
                                     r.loVy = vy;

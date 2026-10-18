@@ -1213,7 +1213,9 @@ struct State {
     // not in keyOf. At the END on purpose (positional State{...}); the padding is spelled out so
     // memcmp over a State (refwatch) never reads indeterminate bytes.
     uint8_t pressAge = 255;
-    uint8_t pressPad0 = 0;
+    // Kairos: --startages, 1 on an anchor whose button is down though `action` reads 0 (the
+    // anchor leaves it 0): the level the human limits count edges from. Cleared on the first step.
+    uint8_t heldSeed = 0;
     // Kairos: --fewpress (search_census.hpp g_fewPress): inputs of this lineage, presses and releases,
     // saturating; read by the goal pick only. Not in keyOf, as tight. 0 whenever the flag is off.
     uint16_t inputs = 0;
@@ -1324,7 +1326,7 @@ struct State {
 // body, after stickSlope's padding). They accumulate and are not seeded, for spdFired's reason;
 // printed in --seeddump under the flag.
 // [2026-10-12] Kairos: 552 -> 560: pressAge (--minpressgap) and its explicit padding, at the end
-// (no padding was left). It accumulates like edgeAge and, like it, is not seeded: an anchor starts
+// (no padding was left). It accumulates like edgeAge and, like it, is not seeded (but by --startages): an anchor starts
 // free (255). inputs (--fewpress) took two of those padding bytes: still 560. It accumulates and
 // is not seeded either: a call counts from its own anchor, which is all its goal pick compares.
 constexpr size_t kStateBytes =

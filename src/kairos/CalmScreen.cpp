@@ -14,7 +14,7 @@ namespace kp {
 namespace {
 
 struct Calm {
-    Ref<CCLayerColor> cover;
+    Ref<CCLayer> cover;
     PlayLayer* layer = nullptr;   // compared only, never touched once it is not PlayLayer::get()
 } g;
 
@@ -30,11 +30,17 @@ void poll() {
     }
     if (!want || g.cover) return;
     const auto win = CCDirector::get()->getWinSize();
-    auto* cover = CCLayerColor::create({10, 10, 16, 255}, win.width, win.height);
-    auto* note = CCLabelBMFont::create("Level hidden while the bot searches", "chatFont.fnt");
-    fitLabel(note, win.width - 32.f, 0.5f);
-    note->setOpacity(110);
-    note->setPosition(win.width / 2.f, 14.f);
+    // GD's menu background.
+    auto* cover = CCLayer::create();
+    auto* bg = CCSprite::create("GJ_gradientBG.png");
+    bg->setScaleX(win.width / bg->getContentSize().width);
+    bg->setScaleY(win.height / bg->getContentSize().height);
+    bg->setPosition({win.width / 2.f, win.height / 2.f});
+    bg->setColor({0, 102, 255});
+    cover->addChild(bg);
+    auto* note = CCLabelBMFont::create("Level hidden while the bot searches", "goldFont.fnt");
+    fitLabel(note, win.width - 32.f, 0.6f);
+    note->setPosition(win.width / 2.f, 18.f);
     cover->addChild(note);
     pl->getParent()->addChild(cover, kCalmZ);
     pl->setVisible(false);

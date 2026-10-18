@@ -1,11 +1,12 @@
 #include "EdgeShift.hpp"
 
+#include <algorithm>
 #include <optional>
+#include <vector>
 
 namespace kpsim::search {
 namespace {
 
-constexpr int kFollowUps = 4;   // next inputs re-timed after a mistimed one (same shift +-2)
 constexpr Tick kProgress = 8;   // a re-timing must push the death this much later to go on
 
 } // namespace
@@ -17,7 +18,7 @@ bool holdOrdered(const Holds& h, size_t i) {
 }
 
 Shift shiftEdge(const Plan& plan, EdgeRef e, int d, const std::function<Try(const Plan&)>& attempt,
-                const std::function<bool(const Holds&, size_t)>& valid) {
+                const std::function<bool(const Holds&, size_t)>& valid, const ShiftOptions& so) {
     auto ok = [&](const Holds& h, size_t i) { return holdOrdered(h, i) && (!valid || valid(h, i)); };
     Shift out;
     Plan p = plan;
@@ -40,11 +41,13 @@ Shift shiftEdge(const Plan& plan, EdgeRef e, int d, const std::function<Try(cons
         return out;
     }
     // The next inputs, re-timed before the death.
-    out.death = r.death;
+    out.death = out.reached = r.death;
     Tick death = r.death;
+    Plan furthest = p;
     size_t hold = e.hold;
     bool press = e.press;
-    for (int n = 0; n < kFollowUps; ++n) {
+    for (int n = 0; n < so.followUps + so.chain && (!so.budget || out.retimed < so.budget); ++n) {
+        const bool chained = n >= so.followUps;
         if (!press) ++hold;
         press = !press;
         if (hold >= hs.size() || (!press && hs[hold].release == macro::kNever)) break;
@@ -52,15 +55,23 @@ Shift shiftEdge(const Plan& plan, EdgeRef e, int d, const std::function<Try(cons
         const Tick was = at;
         std::optional<Plan> best;
         Tick bestDeath = 0;
+        // Offsets from the input's own tick: the same shift, or its own timing, give or take.
+        std::vector<int> done;
         auto tryAt = [&](int s) {
-            const int64_t c = (int64_t)was + d + s;
-            if (c == (int64_t)was || c < 1 || c > (int64_t)death) return false;
+            const int64_t c = (int64_t)was + s;
+            if (s == 0 || c < 1 || c > (int64_t)death || (so.budget && out.retimed >= so.budget)) return false;
+            if (std::find(done.begin(), done.end(), s) != done.end()) return false;
+            done.push_back(s);
             at = (Tick)c;
             bool passed = false;
             if (ok(hs, hold)) {
                 Try f = attempt(p);
                 ++out.retimed;
                 passed = f.ok;
+                if (!passed && f.death > out.reached) {
+                    out.reached = f.death;
+                    furthest = p;
+                }
                 if (!passed && f.death > bestDeath) {
                     bestDeath = f.death;
                     best = p;
@@ -70,10 +81,11 @@ Shift shiftEdge(const Plan& plan, EdgeRef e, int d, const std::function<Try(cons
             return passed;
         };
         bool passed = false;
-        for (int s : {0, -1, 1})
-            if (!passed) passed = tryAt(s);
-        if (!passed && bestDeath <= death)   // no better yet: a wider correction
-            for (int s : {-2, 2})
+        if (chained) passed = tryAt(d);
+        for (int s : {d, d - 1, d + 1, -1, 1})
+            if (!passed && !chained) passed = tryAt(s);
+        for (int k = 2; k <= so.spread && !passed && !chained && bestDeath <= death; ++k)   // no better yet: wider
+            for (int s : {d - k, d + k, -k, k})
                 if (!passed) passed = tryAt(s);
         if (passed) {
             out.result = Shift::Passed;
@@ -81,10 +93,15 @@ Shift shiftEdge(const Plan& plan, EdgeRef e, int d, const std::function<Try(cons
             out.followed = true;
             return out;
         }
-        if (!best || bestDeath < death + kProgress) break;
+        // No progress: this input does not matter here (a cube's release); leave it, try the next.
+        if (!best || bestDeath < death + kProgress) {
+            if (chained || (int64_t)was > (int64_t)death) break;
+            continue;
+        }
         p = std::move(*best);
         death = bestDeath;
     }
+    out.plan = std::move(furthest);
     return out;
 }
 

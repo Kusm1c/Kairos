@@ -2,6 +2,8 @@
 #include "Fiber.hpp"
 
 #include <Geode/modify/FMODAudioEngine.hpp>
+#include <Geode/modify/GJEffectManager.hpp>
+#include <Geode/modify/PlayerObject.hpp>
 #include <Geode/modify/GameStatsManager.hpp>
 #include <Geode/modify/GJBaseGameLayer.hpp>
 #include <Geode/modify/PlayLayer.hpp>
@@ -115,9 +117,12 @@ bool GameEngine::restore(int id) {
     array->addObject(s.checkpoint);
     resetLayer();
     array->removeAllObjects();
+    auto t1 = std::chrono::steady_clock::now();
+    m_stats.resetMs += std::chrono::duration<double, std::milli>(t1 - t0).count();
     // What the checkpoint does not bring back.
     for (int p = 0; p < 2; ++p) pastePlayer(player(p), s.players[p]);
     pasteGameState(m_layer, s.layer);
+    m_stats.pasteMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t1).count();
     global(kSeedTrigger) = s.seeds[0];
     global(kSeedVarIndex) = s.seeds[1];
     global(kSeedVarTable) = s.seeds[2];
@@ -169,7 +174,7 @@ RunResult GameEngine::run(const Plan& plan, Tick until, const Trace* trace) {
     // The game kept stepping after an early stop: restore first.
     if (m_stop == Outcome::Converged || m_stop == Outcome::Diverged)
         throw kpsim::search::EngineError("internal: run after an early stop");
-    const bool mayStop = trace && (trace->known || trace->expect || trace->nearKnown);
+    const bool mayStop = trace && (trace->known || trace->expect || trace->nearKnown || trace->looseKnown);
     Tick chunk = m_stepsPerUpdate ? m_stepsPerUpdate : mayStop ? kFirstChunk : kChunk;
     while (m_stop == Outcome::Reached && m_tick < until) {
         advance(std::min(until - m_tick, chunk));
@@ -189,6 +194,19 @@ uint64_t GameEngine::stateHash() {
 }
 
 float GameEngine::playerX() { return m_layer->m_player1 ? m_layer->m_player1->getPositionX() : 0.f; }
+
+int GameEngine::mode(int player) {
+    auto* p = player ? m_layer->m_player2 : m_layer->m_player1;
+    if (!p) return -1;
+    using namespace kpsim::search;
+    return p->m_isShip ? kShip : p->m_isBird ? kUfo : p->m_isBall ? kBall : p->m_isDart ? kWave
+         : p->m_isRobot ? kRobot : p->m_isSpider ? kSpider : p->m_isSwing ? kSwing : kCube;
+}
+
+int GameEngine::onGround(int player) {
+    auto* p = player ? m_layer->m_player2 : m_layer->m_player1;
+    return p ? (p->m_isOnGround ? 1 : 0) : -1;
+}
 
 void GameEngine::onStep(GJBaseGameLayer* layer) {
     ++m_seen;
@@ -237,19 +255,37 @@ void GameEngine::observe() {
             return;
         }
     }
-    if (!m_trace->nearRecord && !m_trace->nearKnown) return;
-    const uint64_t n = mix(physicsHash(a, kpsim::search::kNearGrid), physicsHash(b, kpsim::search::kNearGrid));
-    if (auto* rec = m_trace->nearRecord) {
-        if (rec->size() < m_tick) rec->resize(m_tick, 0);
-        (*rec)[m_tick - 1] = n;
-    }
-    if (auto* nearKnown = m_trace->nearKnown; nearKnown && m_tick >= m_trace->knownFrom) {
-        auto it = nearKnown->find(kpsim::search::stateKey(m_tick, n));
-        if (it != nearKnown->end()) {
-            m_stop = Outcome::Converged;
-            m_stopTick = m_tick;
-            m_stopEnd = it->second;
+    if (m_trace->nearRecord || m_trace->nearKnown) {
+        const uint64_t n = mix(physicsHash(a, kpsim::search::kNearGrid), physicsHash(b, kpsim::search::kNearGrid));
+        if (auto* rec = m_trace->nearRecord) {
+            if (rec->size() < m_tick) rec->resize(m_tick, 0);
+            (*rec)[m_tick - 1] = n;
         }
+        if (auto* nearKnown = m_trace->nearKnown; nearKnown && m_tick >= m_trace->knownFrom) {
+            auto it = nearKnown->find(kpsim::search::stateKey(m_tick, n));
+            if (it != nearKnown->end()) {
+                m_stop = Outcome::Converged;
+                m_stopTick = m_tick;
+                m_stopEnd = it->second;
+                return;
+            }
+        }
+    }
+    if (!m_trace->looseRecord && !m_trace->looseKnown) return;
+    const int md = mode(0);
+    auto* p1 = m_layer->m_player1;
+    if (!p1 || !kpsim::search::flyingMode(md)) return;
+    const auto cell = kpsim::search::looseCell(md, p1->m_isUpsideDown, p1->getPositionY(), p1->m_yVelocity);
+    if (auto* rec = m_trace->looseRecord) {
+        if (rec->size() < m_tick) rec->resize(m_tick, 0);
+        (*rec)[m_tick - 1] = kpsim::search::looseKey(cell);
+    }
+    Tick end = 0;
+    if (auto* lk = m_trace->looseKnown; lk && m_tick >= m_trace->knownFrom &&
+                                        kpsim::search::looseFind(*lk, m_tick, cell, end)) {
+        m_stop = Outcome::Converged;
+        m_stopTick = m_tick;
+        m_stopEnd = end;
     }
 }
 
@@ -272,6 +308,21 @@ void GameEngine::onFinish() {
 
 namespace {
 
+// Inside one of the engine's restores: the time goes to `field`.
+struct RestoreTimer {
+    double* field = nullptr;
+    std::chrono::steady_clock::time_point t0;
+    RestoreTimer(double kp::EngineStats::*f) {
+        auto* e = kp::GameEngine::active();
+        if (!e || !e->ownReset()) return;
+        field = &(e->statsRef().*f);
+        t0 = std::chrono::steady_clock::now();
+    }
+    ~RestoreTimer() {
+        if (field) *field += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    }
+};
+
 kp::GameEngine* engineFor(GJBaseGameLayer* layer) {
     auto* e = kp::GameEngine::active();
     return e && static_cast<GJBaseGameLayer*>(e->layer()) == layer ? e : nullptr;
@@ -291,6 +342,36 @@ class $modify(KpEngineLayer, GJBaseGameLayer) {
     void handleButton(bool down, int button, bool isPlayer1) {
         if (auto* e = engineFor(this); e && !e->injecting()) return;   // no real input
         GJBaseGameLayer::handleButton(down, button, isPlayer1);
+    }
+    // Timed inside a restore (EngineStats::varsMs).
+    void resetLevelVariables() {
+        auto* e = engineFor(this);
+        if (!e || !e->ownReset()) return GJBaseGameLayer::resetLevelVariables();
+        const auto t0 = std::chrono::steady_clock::now();
+        GJBaseGameLayer::resetLevelVariables();
+        e->statsRef().varsMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    }
+    // A restore puts the sound back where the checkpoint had it (pause, FMOD state, the SFX and song
+    // triggers already passed: 45 ms a restore on Solar Flare, 95% of it). Sound only, and the job's
+    // last real reset does it again. Skipped inside the engine's restores.
+    void pauseAudio() {
+        if (auto* e = engineFor(this); e && e->ownReset()) {
+            ++e->statsRef().audioSkips;
+            return;
+        }
+        GJBaseGameLayer::pauseAudio();
+    }
+    void processActivatedAudioTriggers(float levelTime) {
+        if (auto* e = engineFor(this); e && e->ownReset()) {
+            ++e->statsRef().audioSkips;
+            return;
+        }
+        GJBaseGameLayer::processActivatedAudioTriggers(levelTime);
+    }
+    // As gdsolver's secshaderskip: visual only, put back by the next real reset.
+    void updateShaderLayer(float dt) {
+        if (auto* e = engineFor(this); e && e->shaderSkip()) return;
+        GJBaseGameLayer::updateShaderLayer(dt);
     }
 };
 
@@ -313,6 +394,20 @@ class $modify(KpEnginePlayLayer, PlayLayer) {
         if (engineFor(this)) return;
         PlayLayer::delayedResetLevel();
     }
+    // Timed inside a restore (EngineStats::loadMs).
+    void loadFromCheckpoint(CheckpointObject* cp) {
+        auto* e = engineFor(this);
+        if (!e || !e->ownReset()) return PlayLayer::loadFromCheckpoint(cp);
+        const auto t0 = std::chrono::steady_clock::now();
+        if (cp) e->statsRef().savedObjects += cp->m_vectorSavedObjectStateRef.size();
+        ++e->statsRef().loads;
+        PlayLayer::loadFromCheckpoint(cp);
+        e->statsRef().loadMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    }
+    void processLoadedMoveActions() {
+        RestoreTimer t(&kp::EngineStats::movesMs);
+        PlayLayer::processLoadedMoveActions();
+    }
     void playEndAnimationToPos(cocos2d::CCPoint position) {
         if (auto* e = engineFor(this)) { e->onFinish(); return; }   // no animation
         PlayLayer::playEndAnimationToPos(position);
@@ -331,7 +426,28 @@ class $modify(KpEnginePlayLayer, PlayLayer) {
     }
 };
 
+class $modify(KpEngineEffects, GJEffectManager) {
+    void loadFromState(EffectManagerState& state) {
+        RestoreTimer t(&kp::EngineStats::effectsMs);
+        GJEffectManager::loadFromState(state);
+    }
+};
+
+class $modify(KpEnginePlayer, PlayerObject) {
+    void loadFromCheckpoint(PlayerCheckpoint* cp) {
+        RestoreTimer t(&kp::EngineStats::playersMs);
+        PlayerObject::loadFromCheckpoint(cp);
+    }
+};
+
 class $modify(KpEngineAudio, FMODAudioEngine) {
+    void loadAudioState(FMODAudioState& state) {
+        if (auto* e = kp::GameEngine::active(); e && e->ownReset()) {
+            ++e->statsRef().audioSkips;
+            return;
+        }
+        FMODAudioEngine::loadAudioState(state);
+    }
     int playEffect(gd::string path, float speed, float p2, float volume) {
         if (kp::GameEngine::active()) return 0;
         return FMODAudioEngine::playEffect(path, speed, p2, volume);

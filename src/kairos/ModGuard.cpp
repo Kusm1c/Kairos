@@ -46,6 +46,10 @@ bool physicsHook(std::string_view name) {
     return false;
 }
 
+// Engine-level hooks (drawing, scheduling, input dispatch, networking ticks) stay: pausing them
+// half-way through a frame breaks overlays, and they do not touch the run.
+bool engineHook(std::string_view name) { return name.substr(0, 9) == "cocos2d::"; }
+
 // The game's own module: a patch there may change what it computes.
 bool inGame(uintptr_t addr) {
     static const auto [lo, hi] = [] {
@@ -69,11 +73,20 @@ void pause() {
     for (Mod* m : Loader::get()->getAllMods()) {
         if (!m || m == Mod::get() || !m->isLoaded() || m->isInternal()) continue;
         size_t hooks = 0, patches = 0;
-        for (Hook* h : m->getHooks())
-            if (h->isEnabled() && physicsHook(h->getDisplayName()) && h->disable().isOk()) {
+        // A mod in the run is paused whole, so its other hooks (a pause menu, an attempt recorder)
+        // never read state the paused ones stopped keeping: Showcase crashed in its CCBlockLayer
+        // hook after its resets were paused. Geode's own mods keep all but the run's hooks.
+        bool inRun = false;
+        for (Hook* h : m->getHooks()) inRun = inRun || (h->isEnabled() && physicsHook(h->getDisplayName()));
+        const bool whole = inRun && std::string_view(m->getID()).substr(0, 6) != "geode.";
+        for (Hook* h : m->getHooks()) {
+            const auto name = h->getDisplayName();
+            const bool pauseIt = whole ? !engineHook(name) : physicsHook(name);
+            if (h->isEnabled() && pauseIt && h->disable().isOk()) {
                 g_paused.hooks.push_back(h);
                 ++hooks;
             }
+        }
         for (Patch* p : m->getPatches())
             if (p->isEnabled() && inGame(p->getAddress()) && p->disable().isOk()) {
                 g_paused.patches.push_back(p);

@@ -57,11 +57,12 @@ std::optional<std::filesystem::path> pickFile() {
     return std::filesystem::path(buf);
 }
 
-void pickMacro(GJGameLevel* level, kp::JobKind kind) {
+void pickMacro(GJGameLevel* level, kp::JobKind kind, size_t firstClicks = 0) {
     auto path = pickFile();
     if (!path) return;
     kp::JobRequest req;
     req.kind = kind;
+    req.firstClicks = firstClicks;
     req.source = path->filename().string();
     if (!loadPlan(*path, req)) return;
     req.windows = kp::windowsFor(level, req.plan);
@@ -186,12 +187,14 @@ protected:
                                   {"Optimize", "GJ_button_01.png", menu_selector(KairosPopup::onOptimize)},
                                   {"Windows", "GJ_button_02.png", menu_selector(KairosPopup::onSolutionWindows)}});
             row(y - 56.f, 0.42f, {{"Watch", "GJ_button_02.png", menu_selector(KairosPopup::onSolutionWatch)},
+                                  {"First 12", "GJ_button_02.png", menu_selector(KairosPopup::onFirstClicks)},
                                   {"Export .gdr2", "GJ_button_02.png", menu_selector(KairosPopup::onExport)}});
             y -= 92.f;
         }
         heading("A macro (.gdr2 / .gdr)", y);
         row(y - 24.f, 0.42f, {{"Rhythm", "GJ_button_01.png", menu_selector(KairosPopup::onRhythmMacro)},
                               {"Windows", "GJ_button_02.png", menu_selector(KairosPopup::onWindows)},
+                              {"First 12", "GJ_button_02.png", menu_selector(KairosPopup::onFirstClicksMacro)},
                               {"Watch", "GJ_button_02.png", menu_selector(KairosPopup::onWatch)}});
         // 1-player levels are solved from the Play button; the exact search is for 2 players.
         const bool stats = std::filesystem::exists(kp::statsPath(level));
@@ -215,6 +218,12 @@ protected:
         auto level = m_level;
         this->onClose(nullptr);
         pickMacro(level, kp::JobKind::Windows);
+    }
+    void onFirstClicksMacro(CCObject*) {
+        if (!checkLevel(m_level)) return;
+        auto level = m_level;
+        this->onClose(nullptr);
+        pickMacro(level, kp::JobKind::Windows, 12);
     }
     void onWatch(CCObject*) {
         if (!checkLevel(m_level)) return;
@@ -260,6 +269,17 @@ protected:
                          });
     }
     void onOptimize(CCObject*) { fromSolution(kp::JobKind::Optimize); }
+    // The windows of the first 12 clicks, quickly, to check by hand.
+    void onFirstClicks(CCObject*) {
+        if (!checkLevel(m_level)) return;
+        auto level = m_level;
+        kp::JobRequest req;
+        req.kind = kp::JobKind::Windows;
+        req.firstClicks = 12;
+        this->onClose(nullptr);
+        if (!loadSolution(level, req)) return;
+        kp::startJob(level, std::move(req));
+    }
     void onRhythmSolution(CCObject*) { fromSolution(kp::JobKind::Rhythm); }
     void onRhythmMacro(CCObject*) {
         if (!checkLevel(m_level)) return;
@@ -279,7 +299,8 @@ protected:
                 req.windows = kp::windowsFor(level, req.plan);
                 kp::startJob(level, std::move(req));
             };
-        if (!kp::showWindowStatsFile(kp::statsPath(m_level), practice))
+        if (!kp::showWindowStatsFile(kp::statsPath(m_level), practice,
+                                     [level](const kpsim::search::EdgeTests& t) { kp::startCheck(level, t); }))
             FLAlertLayer::create("Kairos", "These frame windows were measured by an older Kairos. Run <cy>Windows</c> again.",
                                  "OK")->show();
     }

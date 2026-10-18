@@ -19,8 +19,11 @@ private:
     bool init(const std::string& title);
     void update(float dt) override;
 
+    // The fill shows [from, to) of the bar (0..1).
+    void showFill(float from, float to);
+
     cocos2d::CCLabelBMFont *m_status = nullptr, *m_right = nullptr, *m_detail = nullptr;
-    cocos2d::CCLayerColor *m_track = nullptr, *m_fill = nullptr;
+    cocos2d::CCSprite *m_track = nullptr, *m_fill = nullptr;
     float m_width = 0, m_phase = 0;
     bool m_unknown = true;
     std::function<void()> m_stop;

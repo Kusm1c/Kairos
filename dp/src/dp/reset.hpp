@@ -673,7 +673,11 @@ inline void resetInvocationState() {
     g_twinAudit = false;
     g_minPulse = 0;
     g_minPressGap = 0;   // Kairos
+    g_humanFrom = 0;     // Kairos
+    g_startEdgeAge = -1;    // Kairos
+    g_startPressAge = -1;   // Kairos
     g_fewPress = false;   // Kairos
+    g_roomy = false;      // Kairos
     g_tightPx = kTightPx;   // Kairos
     g_inputGrid = 0;
     g_gridMap.clear();

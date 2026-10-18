@@ -31,9 +31,11 @@ double ms(double ticks) { return ticks * 1000.0 / 240.0; }
 
 class StatsPopup : public geode::Popup {
 public:
-    static StatsPopup* create(const WindowReport& r, const std::string& macro, std::function<void()> practice) {
+    static StatsPopup* create(const WindowReport& r, const std::string& macro, std::function<void()> practice,
+                              CheckEdge check) {
         auto* p = new StatsPopup();
         p->m_practice = std::move(practice);
+        p->m_check = std::move(check);
         p->m_report = r;
         if (p->init(r, macro)) {
             p->autorelease();
@@ -169,29 +171,65 @@ private:
             if (capped(v, limited)) return fmt::format("{}{}", r.cap, early ? "-" : "+");
             return fmt::format("{}{}{}", early ? "-" : "+", v, limited && !r.cap ? "+" : "");
         };
+        m_rowTests.clear();
         for (size_t i = 0; i < edges.size(); ++i) {
             const auto& w = edges[i];
             const int width = w.early + w.late + 1;
+            const float y = contentH - row * ((float)i + 0.5f) - 2.f;
+            // Its tries, if kept: a Check button at the end of the row.
+            const kpsim::search::EdgeTests* tests = nullptr;
+            if (m_check)
+                for (const auto& t : r.tests)
+                    if (t.edge.player == w.player && t.edge.hold == w.hold && t.edge.press == w.press) tests = &t;
+            if (tests) {
+                auto* spr = ButtonSprite::create("Check", "bigFont.fnt", "GJ_button_02.png", 0.6f);
+                spr->setScale(0.42f);
+                auto* b = CCMenuItemSpriteExtra::create(spr, this, menu_selector(StatsPopup::onCheck));
+                b->setTag((int)m_rowTests.size());
+                m_rowTests.push_back(*tests);
+                // One menu per row: the scroll layer hides each child that leaves the view, and a
+                // single menu for the whole list sat at its bottom, hidden at the top.
+                const auto bs = spr->getScaledContentSize();
+                auto* m = CCMenu::create();
+                m->setContentSize(bs);
+                m->setPosition({listSize.width - 4.f - bs.width, y - bs.height / 2});
+                b->setPosition({bs.width / 2, bs.height / 2});
+                m->addChild(b);
+                scroll->m_contentLayer->addChild(m);
+            }
             const char* more = capped(w.early, w.earlyLimited) || capped(w.late, w.lateLimited) ? "+" : "";
             auto label = fmt::format("{}#{} {}  {:.2f}s   {} / {}   {}{}t {:.0f}{}ms", two ? (w.player ? "P2 " : "P1 ") : "",
                                      w.hold + 1, w.press ? "press" : "release", w.tick / 240.0,
                                      side(w.early, w.earlyLimited, true), side(w.late, w.lateLimited, false), width,
                                      more, ms(width), more);
             auto* l = CCLabelBMFont::create(label.c_str(), "chatFont.fnt");
-            fitLabel(l, listSize.width - 8.f, 0.5f);
+            fitLabel(l, listSize.width - (tests ? 50.f : 8.f), 0.5f);
             l->setAnchorPoint({0.f, 0.5f});
             l->setColor(widthColor(width));
-            l->setPosition({4.f, contentH - row * ((float)i + 0.5f) - 2.f});
+            l->setPosition({4.f, y});
             scroll->m_contentLayer->addChild(l);
         }
         scroll->scrollToTop();
+        // The list is rebuilt after the popup set its touch priorities: its Check buttons need them too.
+        handleTouchPriority(this, true);
         m_caption = text(fmt::format("{} {} of {} edges  {}", m_byTime ? "first" : "tightest", edges.size(), r.edges.size(),
                                      r.cap ? fmt::format("({0}+ / {0}- = {0} or more)", r.cap) : "(+ = range limit)"),
                          0.45f, {size.width - listSize.width - 14.f, 16.f + listSize.height + 8.f}, {0.f, 0.5f},
                          listSize.width);
     }
 
+    void onCheck(CCObject* sender) {
+        const size_t i = (size_t)static_cast<CCNode*>(sender)->getTag();
+        if (i >= m_rowTests.size()) return;
+        auto check = m_check;
+        auto tests = m_rowTests[i];
+        this->onClose(nullptr);
+        check(tests);
+    }
+
     std::function<void()> m_practice;
+    CheckEdge m_check;
+    std::vector<kpsim::search::EdgeTests> m_rowTests;
     WindowReport m_report;
     ScrollLayer* m_scroll = nullptr;
     CCLabelBMFont* m_caption = nullptr;
@@ -200,11 +238,11 @@ private:
 
 } // namespace
 
-void showWindowStats(const WindowReport& r, const std::string& macro, std::function<void()> practice) {
-    if (auto* p = StatsPopup::create(r, macro, std::move(practice))) p->show();
+void showWindowStats(const WindowReport& r, const std::string& macro, std::function<void()> practice, CheckEdge check) {
+    if (auto* p = StatsPopup::create(r, macro, std::move(practice), std::move(check))) p->show();
 }
 
-bool showWindowStatsFile(const std::filesystem::path& path, std::function<void()> practice) {
+bool showWindowStatsFile(const std::filesystem::path& path, std::function<void()> practice, CheckEdge check) {
     std::ifstream in(path);
     if (!in) return false;
     std::stringstream ss;
@@ -213,7 +251,7 @@ bool showWindowStatsFile(const std::filesystem::path& path, std::function<void()
     std::string macro;
     uint64_t plan = 0;
     if (!kpsim::search::readWindowFile(ss.str(), r, macro, plan)) return false;
-    showWindowStats(r, macro, std::move(practice));
+    showWindowStats(r, macro, std::move(practice), std::move(check));
     return true;
 }
 

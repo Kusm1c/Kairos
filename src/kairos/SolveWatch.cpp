@@ -1,7 +1,6 @@
-// After a Solve that wrote a solution: optimize it (setting "auto-optimize") or offer to. After one
-// the loop stopped as impossible within the human limits: say where and why.
+// After a Solve that wrote a solution: optimize it (setting "auto-optimize") or offer to. When the
+// solver went on without the human limits, Optimize puts them back at once.
 #include "Jobs.hpp"
-#include "LimitsPopup.hpp"
 #include "ModGuard.hpp"
 
 #include <Geode/Geode.hpp>
@@ -20,10 +19,10 @@ struct Watch {
     Ref<GJGameLevel> level;
     bool had = false;
     std::filesystem::file_time_type before{};
-    std::string limitStop;   // kp::onLimitStop's reason, shown once the session is over
+    std::string limitsDropped;   // kp::onLimitsDropped: where the solver went on without the limits
 } g;
 
-void offer(GJGameLevel* level) {
+void offer(GJGameLevel* level, const std::string& limitsDropped) {
     JobRequest req;
     req.kind = JobKind::Optimize;
     std::string err;
@@ -31,8 +30,9 @@ void offer(GJGameLevel* level) {
     if (!kpsim::macro::readSolverPlan(path, req.plan, err) || !req.plan.presses()) return;
     req.merged = req.plan;
     req.source = path.filename().string();
+    req.fitLimits = limitsDropped;
     Ref<GJGameLevel> keep = level;
-    if (Mod::get()->getSettingValue<bool>("auto-optimize")) {
+    if (!limitsDropped.empty() || Mod::get()->getSettingValue<bool>("auto-optimize")) {
         Loader::get()->queueInMainThread([keep, req]() mutable { startJob(keep, std::move(req)); });
         return;
     }
@@ -70,19 +70,13 @@ void poll() {
         }
     }
     if (!driving && g.driving && g.level) {
-        if (!g.limitStop.empty()) {
-            const std::string name = g.level->m_levelName, why = g.limitStop;
-            Loader::get()->queueInMainThread([name, why] { showLimitsPopup(name, why); });
-        } else {
-            std::error_code ec;
-            auto path = solverSolutionPath(g.level);
-            if (std::filesystem::exists(path, ec) &&
-                (!g.had || std::filesystem::last_write_time(path, ec) > g.before)) {
-                saveModelWorld((int)g.level->m_levelID, modelDir(g.level));
-                offer(g.level);
-            }
+        std::error_code ec;
+        auto path = solverSolutionPath(g.level);
+        if (std::filesystem::exists(path, ec) && (!g.had || std::filesystem::last_write_time(path, ec) > g.before)) {
+            saveModelWorld((int)g.level->m_levelID, modelDir(g.level));
+            offer(g.level, g.limitsDropped);
         }
-        g.limitStop.clear();
+        g.limitsDropped.clear();
     }
     if (!driving) g.level = nullptr;
     g.driving = driving;
@@ -90,7 +84,9 @@ void poll() {
 
 } // namespace
 
-void onLimitStop(const std::string& why) { g.limitStop = why; }
+void onLimitsDropped(const std::string& where) {
+    if (g.limitsDropped.empty()) g.limitsDropped = where;
+}
 
 } // namespace kp
 

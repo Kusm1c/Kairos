@@ -422,7 +422,7 @@ protected:
             v.push_back({Severity::Info, "Human limits on",
                          "Presses and gaps of at least " + std::to_string(pulse) + " ticks"
                              + (cps > 0 ? ", at most " + std::to_string(cps) + " clicks a second" : std::string())
-                             + ". If the level needs faster inputs, Solve stops and says where."});
+                             + ". Where only faster inputs pass, Solve goes on and Optimize brings the solution back within them."});
         }
         return v;
     }

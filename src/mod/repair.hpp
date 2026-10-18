@@ -43,7 +43,7 @@
 
 // Kairos: the run stops because the level is impossible within the human limits; Kairos shows why
 // once the session is over (src/kairos/SolveWatch.cpp).
-namespace kp { void onLimitStop(const std::string& why); }
+namespace kp { void onLimitsDropped(const std::string& where); }
 
 namespace p1 {
 
@@ -1248,10 +1248,26 @@ inline unsigned long long g_needTrigDropped = 0;   // wide: see SolveOutcome::re
 inline unsigned long long g_needTrigSuspect = 0;   // wide: see SolveOutcome::resimTrig
 inline int g_stallRuns = 0;          // iterations since the run last got deeper
 // Kairos: the human-limits test. Stuck at a wall with them on, one round goes without them
-// (--minpulse, --minpressgap): if the game then gets past the wall with inputs faster than they
-// allow, the level is impossible within them and the run stops saying so (kp::onLimitStop).
+// (--minpulse, --minpressgap): if the game then gets past the wall with faster inputs, the run
+// goes on without them up to 2 s past the wall (dp --humanfrom), and Kairos's Optimize fits that
+// stretch to them after (kp::onLimitsDropped).
 inline long long g_kLimitWall = -1;     // the wall the round without them is for, -1 = none
 inline long long g_kLimitTested = -1;   // the last wall tested, once each
+inline long long g_kHumanFrom = 0;      // the limits hold from this tick on
+
+// dp --startages: ticks since the plan's last change and last press before t0, as of t0 - 1.
+inline std::string kStartAges(const std::vector<InputCmd>& plan, long long t0) {
+    long long edge = -1000, press = -1000;
+    bool down = false;
+    for (const InputCmd& c : plan) {
+        if (c.step >= t0) break;
+        if (c.down == down) continue;
+        down = c.down;
+        edge = c.step;
+        if (down) press = c.step;
+    }
+    return std::to_string(std::min(254LL, t0 - 1 - edge)) + "," + std::to_string(std::min(254LL, t0 - 1 - press));
+}
 inline bool g_needUnseen = false;    // go and touch doors whose effect has not been seen
 inline int g_horizonFull = 0;        // a plan that covers the level
 inline int g_horizonNow = 0;         // ...and what is being asked for right now
@@ -2908,6 +2924,10 @@ inline std::vector<std::string> baseArgs(const std::string& out,
     // Kairos: human inputs unless "Go crazy!" (every press and release lasts this long), and
     // except in the round that tests whether they are the wall (g_kLimitWall).
     if (!Mod::get()->getSettingValue<bool>("go-crazy") && g_kLimitWall < 0) {
+        if (g_kHumanFrom > 0) {
+            a.push_back("--humanfrom");
+            a.push_back(std::to_string(g_kHumanFrom));
+        }
         a.push_back("--minpulse");
         a.push_back(std::to_string(Mod::get()->getSettingValue<int64_t>("human-min-pulse")));
         // ...and no faster clicking than "max-cps" (0 = no limit).
@@ -2919,9 +2939,10 @@ inline std::vector<std::string> baseArgs(const std::string& out,
     // Kairos: which of the routes reaching the end the search keeps ("solve-goal").
     if (const auto goal = Mod::get()->getSettingValue<std::string>("solve-goal"); goal == "Fewest inputs") {
         a.push_back("--fewpress");
-    } else if (goal == "Most lenient windows") {
+    } else {   // roomy routes: wider frame windows
+        a.push_back("--roomy");
         a.push_back("--tightpx");
-        a.push_back("12");
+        a.push_back(goal == "Most lenient windows" ? "16" : "8");
     }
     for (const std::string& s : g_cfg.dpArgs) a.push_back(s);
     // An input grid (cfg dpinputgrid, or dparg=--inputgrid) is a cheap search, not the loop's
@@ -5426,6 +5447,8 @@ inline bool runLadder(long long dt) {
         }
         a.push_back("--start");
         a.push_back(arg);
+        a.push_back("--startages");   // Kairos: the human limits across the seam
+        a.push_back(kStartAges(g_plan, t0));
         addStartP2dx(a, r);   // dp --p2xoff
         // ...and the coins GD had already credited by t0 (AnchorRow::coins).
         const std::string coinMask = g_cfg.coinRoute ? std::to_string(r->coins) : "";
@@ -6521,6 +6544,7 @@ inline void start(GJBaseGameLayer* l) {
     }
     g_stallRuns = 0;
     g_kLimitWall = g_kLimitTested = -1;   // Kairos
+    g_kHumanFrom = 0;
     g_needUnseen = false;
     if (!carry) g_iter = 0;
     g_plan.clear();
@@ -8239,7 +8263,8 @@ inline void onDeath(long long dt, float deathX) {
     // ranking is closed to it.
     if (deeper) {
         // Kairos: the round without the human limits got past their wall. With inputs faster than
-        // they allow, the level is impossible within them: stop, saying where and what it took.
+        // they allow, the run goes on without them; whether the level needs them is the game's
+        // call afterwards, when Optimize fits the solution to the limits.
         if (g_kLimitWall >= 0) {
             const long long wall = g_kLimitWall;
             g_kLimitWall = -1;
@@ -8247,17 +8272,17 @@ inline void onDeath(long long dt, float deathX) {
             const std::string need = kLimitsOn(pulse, every) ? kLimitBreach(wall - 480, dt, pulse, every)
                                                              : std::string();
             if (!need.empty()) {
-                char where[128];
-                snprintf(where, sizeof(where), "At x %.0f (%.2f s) the level was only passed without them: ",
-                         (double)g_bestDeathX, wall / 240.0);
-                kp::onLimitStop(where + need);
-                g_stop = true;
-                g_hudPhase = "stopped: impossible with the human limits";
-                giveUp(("impossible with the human limits - " + std::string(where) + need).c_str(), "kairos_limits");
-                return;
+                char where[96];
+                snprintf(where, sizeof(where), "x %.0f (%.2f s)", (double)g_bestDeathX, wall / 240.0);
+                g_kHumanFrom = std::max(g_kHumanFrom, wall + 480);
+                kp::onLimitsDropped(where);
+                writeResult("dpsolve:   [kairos] past " + std::string(where) + " only without the human limits ("
+                            + need + "): off up to t=" + std::to_string(g_kHumanFrom)
+                            + ", Optimize fits that stretch to them after");
+            } else {
+                writeResult("dpsolve:   [kairos] past the wall without the human limits, with inputs that keep "
+                            "them - not the limits; they are back on");
             }
-            writeResult("dpsolve:   [kairos] past the wall without the human limits, with inputs that keep "
-                        "them - not the limits; they are back on");
         }
         // The run got deeper. Whatever was turned on to get it moving has done its job, so the
         // expensive part of it is given back -- the full lookahead costs nothing while the model

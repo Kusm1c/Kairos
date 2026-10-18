@@ -17,6 +17,11 @@ using kpsim::search::Trace;
 struct EngineStats {
     uint64_t steps = 0, saves = 0, restores = 0, mismatches = 0, updates = 0;
     double restoreMs = 0, saveMs = 0, updateMs = 0;
+    // Where a restore goes: GD's resetLevel (its checkpoint load, its variables), then our paste.
+    double resetMs = 0, loadMs = 0, varsMs = 0, pasteMs = 0;
+    // ...and inside the checkpoint load: effects, moves in progress, players, section re-bucketing.
+    double effectsMs = 0, movesMs = 0, playersMs = 0;
+    uint64_t audioSkips = 0, savedObjects = 0, loads = 0;
 };
 
 // The real game as a search engine. Only one exists at a time.
@@ -34,12 +39,18 @@ public:
     RunResult run(const Plan& plan, Tick until, const Trace* trace = nullptr) override;
     uint64_t stateHash() override;
     float playerX() override;
+    int onGround(int player) override;
+    int mode(int player) override;
     void setStepsPerUpdate(Tick n) override { m_stepsPerUpdate = n; }
     void status(const std::string& text) override { m_status = text; }
     void progress(double f) override { m_progress = f; }
     double progressValue() const { return m_progress; }
     void restoreMismatch(Tick snapshot, Tick diverged) override;
 
+    // Restores leave GD's shader layer as it is (resetLevel moves every sprite layer in and out of
+    // it twice, most of a restore); the next real reset puts it back. Off when the level is watched.
+    void setShaderSkip(bool on) { m_shaderSkip = on; }
+    bool shaderSkip() const { return m_shaderSkip; }
     const std::string& statusText() const { return m_status; }
     const EngineStats& stats() const { return m_stats; }
     void cancel() { m_cancel = true; }
@@ -57,6 +68,7 @@ public:
     void onDeathBlocked();
     void onFinish();
     bool ownReset() const { return m_ownReset; }
+    EngineStats& statsRef() { return m_stats; }
 
 private:
     struct Save {
@@ -86,6 +98,7 @@ private:
     const Trace* m_trace = nullptr;
     bool m_inUpdate = false, m_injecting = false, m_ownReset = false;
     bool m_cancel = false, m_invalid = false, m_deathBlocked = false;
+    bool m_shaderSkip = true;
     Tick m_expected = 0;
     Tick m_seen = 0;   // steps the game ran in our last update
     Tick m_stepsPerUpdate = 0;

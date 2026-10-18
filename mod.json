@@ -44,6 +44,18 @@
 			"min": 1,
 			"max": 100
 		},
+		"window-markers": {
+			"name": "Frame window markers",
+			"description": "Watch and rhythm practice: a dot by each click and release with its frame window, in 240 Hz frames (from the last Windows measure of that macro).",
+			"type": "bool",
+			"default": false
+		},
+		"window-check-tests": {
+			"name": "Check: every try",
+			"description": "Check (by a 1 to 3 tick window in the stats) fast-forwards to just before that click and replays each shift the measure tried, one by one. Off: only the clicks as measured, from there.",
+			"type": "bool",
+			"default": true
+		},
 		"rhythm-speed": {
 			"name": "Rhythm practice scroll speed (px/s)",
 			"description": "How fast the notes of the rhythm practice move to the hit line.",

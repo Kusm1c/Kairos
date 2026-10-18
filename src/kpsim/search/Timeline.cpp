@@ -4,11 +4,13 @@
 
 namespace kpsim::search {
 
-RunResult Timeline::advance(const Plan& plan, Tick until, std::vector<uint64_t>* nearTrace) {
+RunResult Timeline::advance(const Plan& plan, Tick until, std::vector<uint64_t>* nearTrace,
+                            std::vector<uint64_t>* looseTrace) {
     m_plan = plan;
     if (m_trace.size() > m_engine.tick()) m_trace.resize(m_engine.tick());
     Trace rec{&m_trace};
     rec.nearRecord = nearTrace;
+    rec.looseRecord = looseTrace;
     for (;;) {
         Tick now = m_engine.tick();
         Tick next = (now / m_spacing + 1) * m_spacing;
@@ -78,6 +80,30 @@ void Timeline::splice(const Plan& plan, Tick from, Tick to, const std::vector<ui
         if (m_trace.size() < t) m_trace.resize(t, 0);
         m_trace[t - 1] = rec[t - 1];
     }
+}
+
+int Timeline::pin(Tick t) {
+    if (!m_enabled || !t || m_bad.count(t) || m_plan.anyHeldAt(t) || m_plan.anyHeldAt(t + 1)) return 0;
+    for (const auto& s : m_snaps)
+        if (s.tick == t) return 0;
+    if (seek(t) != t) {
+        RunResult r = m_engine.run(m_plan, t);
+        if (r.outcome != Outcome::Reached || r.tick != t) return 0;
+    }
+    const int id = m_engine.save();
+    if (id < 0) return 0;
+    auto it = std::upper_bound(m_snaps.begin(), m_snaps.end(), t, [](Tick v, const Snap& s) { return v < s.tick; });
+    m_snaps.insert(it, {t, id, true});
+    return id;
+}
+
+void Timeline::unpin(int id) {
+    for (size_t i = 0; i < m_snaps.size(); ++i)
+        if (m_snaps[i].id == id) {
+            m_engine.drop(id);
+            m_snaps.erase(m_snaps.begin() + (ptrdiff_t)i);
+            return;
+        }
 }
 
 void Timeline::dropSnaps() {

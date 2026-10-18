@@ -163,12 +163,12 @@ inline float hazardClearance(const std::vector<const Obj*>& near, double px,
 // is acceptable and it is the reason this is a SCORE and not a physics test: it
 // ranks routes consistently, it never decides whether anything lives or dies.
 inline bool tightHere(const std::vector<const Obj*>& near, double px, double py,
-                      double half, double eps) {
+                      double half, double eps, bool hazardsOnly = false) {   // Kairos: hazardsOnly
     const double pl = px - half, pr = px + half;
     const double pb = py - half, pt = py + half;
     for (const Obj* o : near) {
         if (o->type == 0) {
-            if (o->slope || o->oneway) continue;
+            if (o->slope || o->oneway || hazardsOnly) continue;
             if (o->cx + o->hw <= pl || o->cx - o->hw >= pr) continue;
             const double b = o->cy - o->hh, t = o->cy + o->hh;
             if (t <= pb) { if (pb - t < eps) return true; }

@@ -4952,6 +4952,44 @@ class $modify(GJBaseGameLayer) {
             }
             return held;
         };
+        // Kairos: the human limits the DP keeps (--minpulse, --minpressgap from --humanfrom on) hold
+        // for this search's branches too: on Solar Flare a section it solved came back with 1-tick
+        // presses Optimize could not humanize. A child at `depth` (tick g_ckptTick + depth) may not
+        // change the button within K ticks of its last change, nor press within G of the last press.
+        const bool kLimits = !Mod::get()->getSettingValue<bool>("go-crazy") && dpsolve::g_kLimitWall < 0;
+        const int kPulse = (int)Mod::get()->getSettingValue<int64_t>("human-min-pulse");
+        const int64_t kCps = Mod::get()->getSettingValue<int64_t>("max-cps");
+        const int kGap = kCps > 0 ? (int)((240 + kCps - 1) / kCps) : 0;
+        long long kHeadChange = -100000, kHeadPress = -100000;   // the flown plan's, up to the head
+        {
+            bool down = false;
+            for (const auto& in : g_cfg.inputs) {
+                if (in.step > g_ckptTick) break;
+                if (in.down == down) continue;
+                down = in.down;
+                kHeadChange = in.step;
+                if (down) kHeadPress = in.step;
+            }
+        }
+        auto kHumanBlocks = [&](int ni, int branch, int depth) {
+            const long long tChild = g_ckptTick + depth;
+            if (!kLimits || tChild < dpsolve::g_kHumanFrom) return false;
+            const int level = g_nodes[(size_t)ni].in;
+            if (branch == level) return false;
+            // Ticks the parent's level has lasted, and the last press, walking back to the head.
+            long long lastChange = kHeadChange, lastPress = kHeadPress;
+            long long t = tChild - 1;
+            for (int n = ni; n >= 0 && tChild - t <= std::max(kPulse, kGap); --t) {   // older: no matter
+                const int p = g_nodes[(size_t)n].parent;
+                if (p >= 0 && g_nodes[(size_t)p].in != g_nodes[(size_t)n].in) {
+                    if (lastChange < t) lastChange = t;
+                    if (g_nodes[(size_t)n].in && lastPress < t) lastPress = t;
+                }
+                n = p;
+            }
+            if (kPulse > 1 && tChild - lastChange < kPulse) return true;
+            return branch == 1 && kGap > 1 && tChild - lastPress < kGap;
+        };
         // The spine as a check on the snapshot (secsolve::g_spineUntil): noted when a layer ends
         // without the spine's child while the plan it flies was still alive in the game there.
         // The search goes on -- whatever it finds is replayed from the head before it counts, so a
@@ -5091,6 +5129,7 @@ class $modify(GJBaseGameLayer) {
                     continue;
                 }
                 for (int branch = 0; branch < 2; ++branch) {
+                    if (kHumanBlocks(ni, branch, depth)) continue;   // Kairos: human limits
                     g_died = false;          // pick up this step's death verdict
                     if (g_snapOn) {
                         const auto snapT0 = std::chrono::steady_clock::now();   // print only

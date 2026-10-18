@@ -9,7 +9,7 @@ using namespace geode::prelude;
 namespace kp {
 
 namespace {
-constexpr float kW = 380.f, kH = 60.f, kBarH = 6.f;
+constexpr float kW = 380.f, kH = 64.f;
 
 std::string clock(double s) {
     int t = (int)std::lround(std::max(0.0, s));
@@ -34,42 +34,52 @@ bool ProgressPanel::init(const std::string& title) {
     this->setContentSize({m_width, kH});
     this->setPosition({(win.width - m_width) / 2.f, win.height - kH - 6.f});
 
-    auto* bg = CCLayerColor::create({8, 10, 20, 190}, m_width, kH);
+    // GD's own popup and level progress bar.
+    auto* bg = CCScale9Sprite::create("GJ_square01.png");
+    bg->setContentSize({m_width, kH});
+    bg->setAnchorPoint({0.f, 0.f});
     this->addChild(bg);
-    auto* edge = CCLayerColor::create({90, 220, 255, 200}, m_width, 1.5f);
-    edge->setPosition({0.f, kH - 1.5f});
-    this->addChild(edge);
 
-    auto* t = CCLabelBMFont::create(title.c_str(), "bigFont.fnt");
-    fitLabel(t, m_width * 0.6f, 0.38f, 0.3f);   // the time left keeps the right side
+    auto* t = CCLabelBMFont::create(title.c_str(), "goldFont.fnt");
+    fitLabel(t, m_width * 0.6f, 0.55f, 0.35f);   // the time left keeps the right side
     t->setAnchorPoint({0.f, 0.5f});
-    t->setPosition({10.f, kH - 13.f});
+    t->setPosition({12.f, kH - 15.f});
     this->addChild(t);
 
-    m_right = CCLabelBMFont::create("", "chatFont.fnt");
-    m_right->setScale(0.55f);
+    m_right = CCLabelBMFont::create("", "bigFont.fnt");
+    m_right->setScale(0.3f);
     m_right->setAnchorPoint({1.f, 0.5f});
-    m_right->setPosition({m_width - 10.f, kH - 13.f});
+    m_right->setPosition({m_width - 12.f, kH - 15.f});
     this->addChild(m_right);
 
-    m_status = CCLabelBMFont::create("", "chatFont.fnt");
-    m_status->setScale(0.52f);
+    m_status = CCLabelBMFont::create("", "bigFont.fnt");
+    m_status->setScale(0.3f);
     m_status->setAnchorPoint({0.f, 0.5f});
-    m_status->setPosition({10.f, kH - 30.f});
+    m_status->setPosition({12.f, kH - 32.f});
     this->addChild(m_status);
 
-    m_track = CCLayerColor::create({40, 44, 60, 255}, m_width - 20.f, kBarH);
-    m_track->setPosition({10.f, 12.f});
+    const float barW = m_width - 24.f;
+    m_track = CCSprite::create("GJ_progressBar_001.png");
+    m_track->setColor({0, 0, 0});
+    m_track->setOpacity(125);
+    m_track->setScaleX(barW / m_track->getContentSize().width);
+    m_track->setScaleY(0.7f);
+    m_track->setAnchorPoint({0.f, 0.5f});
+    m_track->setPosition({12.f, 15.f});
     this->addChild(m_track);
-    m_fill = CCLayerColor::create({90, 220, 255, 255}, 0.f, kBarH);
-    m_fill->setPosition({10.f, 12.f});
+    m_fill = CCSprite::create("GJ_progressBar_001.png");
+    m_fill->setColor({0, 255, 0});
+    m_fill->setScaleX(m_track->getScaleX());
+    m_fill->setScaleY(0.7f);
+    m_fill->setAnchorPoint({0.f, 0.5f});
     this->addChild(m_fill);
+    showFill(0.f, 0.f);
 
-    m_detail = CCLabelBMFont::create("Esc, then Quit: stop", "chatFont.fnt");
-    m_detail->setScale(0.42f);
-    m_detail->setAnchorPoint({1.f, 0.5f});
-    m_detail->setPosition({m_width - 10.f, 5.f});
-    m_detail->setOpacity(150);
+    m_detail = CCLabelBMFont::create("", "chatFont.fnt");
+    m_detail->setScale(0.45f);
+    m_detail->setAnchorPoint({0.f, 0.5f});
+    m_detail->setPosition({12.f, 4.f});
+    m_detail->setOpacity(170);
     this->addChild(m_detail);
     this->scheduleUpdate();
     return true;
@@ -81,17 +91,23 @@ void ProgressPanel::set(const std::string& status, double fraction, double elaps
     m_unknown = fraction < 0;
     if (!m_unknown) {
         const double f = std::clamp(fraction, 0.0, 1.0);
-        m_fill->setPosition({10.f, 12.f});
-        m_fill->changeWidth((float)f * (m_width - 20.f));
+        showFill(0.f, (float)f);
         std::string left = f > 0.02 ? "  |  " + clock(elapsed / f - elapsed) + " left" : "";
         m_right->setString(fmt::format("{:.0f}%{}", f * 100.0, left).c_str());
     } else {
         m_right->setString(clock(elapsed).c_str());
     }
-    m_detail->setString((m_stop ? detail : detail.empty() ? std::string("Esc, then Quit: stop")
-                                                      : detail + "   |   Esc, then Quit: stop")
-                            .c_str());
-    fitLabel(m_detail, m_width - 20.f, 0.42f, 0.38f);
+    m_detail->setString(detail.c_str());
+    fitLabel(m_detail, m_width - (m_stop ? 90.f : 24.f), 0.45f, 0.35f);
+}
+
+void ProgressPanel::showFill(float from, float to) {
+    const auto full = m_track->getContentSize();
+    const float a = std::clamp(from, 0.f, 1.f), b = std::clamp(to, a, 1.f);
+    // GD's fill: the bar's own texture, cut to the part shown.
+    m_fill->setTextureRect({full.width * a, 0.f, full.width * (b - a), full.height});
+    m_fill->setPosition({12.f + m_track->getScaledContentSize().width * a, 15.f});
+    m_fill->setVisible(b > a);
 }
 
 void ProgressPanel::onStop(std::function<void()> stop) {
@@ -101,9 +117,8 @@ void ProgressPanel::onStop(std::function<void()> stop) {
     this->addChild(menu);
     auto* b = CCMenuItemSpriteExtra::create(ButtonSprite::create("Stop", "bigFont.fnt", "GJ_button_06.png", 0.35f), this,
                                             menu_selector(ProgressPanel::stopClicked));
-    b->setPosition({m_width - 30.f, -14.f});
+    b->setPosition({m_width - 36.f, 4.f});
     menu->addChild(b);
-    m_detail->setString("");
 }
 
 void ProgressPanel::stopClicked(CCObject*) {
@@ -113,11 +128,10 @@ void ProgressPanel::stopClicked(CCObject*) {
 void ProgressPanel::update(float dt) {
     if (!m_unknown) return;
     // A short segment sweeping the track.
-    const float w = m_width - 20.f, seg = w * 0.18f;
+    constexpr float seg = 0.18f;
     m_phase = std::fmod(m_phase + dt * 0.6f, 1.f);
-    const float x = (w + seg) * m_phase - seg;
-    m_fill->setPosition({10.f + std::max(0.f, x), 12.f});
-    m_fill->changeWidth(std::clamp(std::min(seg, x + seg), 0.f, w - std::max(0.f, x)));
+    const float x = (1.f + seg) * m_phase - seg;
+    showFill(x, x + seg);
 }
 
 } // namespace kp

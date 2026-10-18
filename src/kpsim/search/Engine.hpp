@@ -1,6 +1,7 @@
 #pragma once
 #include "kpsim/macro/Macro.hpp"
 
+#include <cmath>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -31,9 +32,42 @@ struct Trace {
     // The same, with the state on a kNearGrid grid: back on a known run, not exactly on it.
     std::vector<uint64_t>* nearRecord = nullptr;
     const KnownStates* nearKnown = nullptr;
+    // In flight only (ship, UFO, swing): back on a known run roughly (looseCell), any route.
+    std::vector<uint64_t>* looseRecord = nullptr;
+    const KnownStates* looseKnown = nullptr;
 };
 
 constexpr double kNearGrid = 1.0 / 1024;   // units
+
+// Player modes, as Engine::mode reports them.
+enum Mode { kCube, kShip, kBall, kUfo, kWave, kRobot, kSpider, kSwing };
+inline bool flyingMode(int m) { return m == kShip || m == kUfo || m == kSwing; }
+
+// "Roughly on the route" in flight: y on a 2-unit grid, vy on a 0.5 grid, a neighbour cell counts.
+constexpr double kLooseY = 2.0, kLooseVy = 0.5;
+struct LooseCell {
+    uint64_t salt = 0;   // mode, gravity
+    int64_t y = 0, vy = 0;
+};
+inline LooseCell looseCell(int mode, bool upsideDown, double y, double vy) {
+    return {(uint64_t)(mode * 2 + (upsideDown ? 1 : 0)) + 1, (int64_t)std::llround(y / kLooseY),
+            (int64_t)std::llround(vy / kLooseVy)};
+}
+inline uint64_t looseKey(const LooseCell& c, int dy = 0, int dvy = 0) {
+    const uint64_t h = c.salt * 0x9E3779B97F4A7C15ull ^ (uint64_t)(c.y + dy) * 0xC2B2AE3D27D4EB4Full ^
+                       (uint64_t)(c.vy + dvy) * 0x165667B19E3779F9ull;
+    return h ? h : 1;
+}
+// The end tick of a known run in this cell or a neighbour, or false.
+inline bool looseFind(const KnownStates& known, Tick t, const LooseCell& c, Tick& end) {
+    for (int dy = -1; dy <= 1; ++dy)
+        for (int dvy = -1; dvy <= 1; ++dvy)
+            if (auto it = known.find(stateKey(t, looseKey(c, dy, dvy))); it != known.end()) {
+                end = it->second;
+                return true;
+            }
+    return false;
+}
 
 struct RunResult {
     Outcome outcome = Outcome::Reached;
@@ -73,6 +107,10 @@ public:
 
     virtual uint64_t stateHash() = 0;
     virtual float playerX() = 0;
+    // 1 on the ground, 0 in the air, -1 unknown.
+    virtual int onGround(int player) { return -1; }
+    // Mode (kCube...), -1 unknown.
+    virtual int mode(int player) { return -1; }
 
     // Physics steps per game update (1 = like 240 FPS); 0 = engine default.
     virtual void setStepsPerUpdate(Tick) {}

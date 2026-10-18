@@ -1893,6 +1893,7 @@ inline int cliMainOnce(int argc, char** argv) {
         // --twinaudit (search_census.hpp): value-less.
         if (!std::strcmp(argv[i], "--twinaudit")) g_twinAudit = true;
         if (!std::strcmp(argv[i], "--fewpress")) g_fewPress = true;   // Kairos
+        if (!std::strcmp(argv[i], "--roomy")) g_roomy = true;         // Kairos
         if (!std::strcmp(argv[i], "--heldkeyread")) g_heldKeyRead = true;   // value-less
         if (!std::strcmp(argv[i], "--no-heldkeyread")) g_heldKeyRead = false;
         // --trigraw: autonomous triggers behind the anchor trust the
@@ -2115,6 +2116,9 @@ inline int cliMainOnce(int argc, char** argv) {
         if (!std::strcmp(argv[i], "--keyxqfly")) g_keyXqFly = std::atof(argv[i + 1]);
         if (!std::strcmp(argv[i], "--minpulse")) g_minPulse = std::atoi(argv[i + 1]);
         if (!std::strcmp(argv[i], "--minpressgap")) g_minPressGap = std::atoi(argv[i + 1]);   // Kairos
+        if (!std::strcmp(argv[i], "--startages"))   // Kairos
+            std::sscanf(argv[i + 1], "%d,%d", &g_startEdgeAge, &g_startPressAge);
+        if (!std::strcmp(argv[i], "--humanfrom")) g_humanFrom = std::atoll(argv[i + 1]);      // Kairos
         if (!std::strcmp(argv[i], "--tightpx")) g_tightPx = std::atof(argv[i + 1]);   // Kairos
         if (!std::strcmp(argv[i], "--inputgrid")) g_inputGrid = std::atoi(argv[i + 1]);
         if (!std::strcmp(argv[i], "--shipvq")) g_shipVq = std::atof(argv[i + 1]);
@@ -4229,6 +4233,12 @@ inline int cliMainOnce(int argc, char** argv) {
                 if (h.first.rfind("slope", 0) == 0)
                     std::printf(" %s=%d", h.first.c_str(), h.second);
         std::printf("\n");
+    }
+    // Kairos: --startages, the plan's button history behind the anchor (search_census.hpp).
+    if (t0 > 0) {
+        if (g_minPulse > 1 && g_startEdgeAge >= 0) init.edgeAge = (uint8_t)std::min(254, g_startEdgeAge);
+        if (g_minPressGap > 1 && g_startPressAge >= 0) init.pressAge = (uint8_t)std::min(254, g_startPressAge);
+        if ((g_startEdgeAge >= 0 || g_startPressAge >= 0) && init.held && !init.action) init.heldSeed = 1;
     }
     // ...and at the level's own start the byte is known: resetLevel leaves
     // [layer+0x311] clear and only a mode portal writes it. Known only when the

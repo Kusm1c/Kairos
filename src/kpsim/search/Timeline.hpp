@@ -14,8 +14,9 @@ public:
     ~Timeline() { clear(); }
 
     // Runs `plan` from the engine's tick to `until`, snapshotting on the way.
-    // `plan` must match the previous one up to the engine's tick. `nearTrace`: Trace::nearRecord.
-    RunResult advance(const Plan& plan, Tick until, std::vector<uint64_t>* nearTrace = nullptr);
+    // `plan` must match the previous one up to the engine's tick. Traces: Trace::nearRecord, looseRecord.
+    RunResult advance(const Plan& plan, Tick until, std::vector<uint64_t>* nearTrace = nullptr,
+                      std::vector<uint64_t>* looseTrace = nullptr);
     // Engine at the latest usable snapshot <= t (else level start). Returns its tick.
     Tick seek(Tick t);
     // Plan changed after t: later snapshots are invalid.
@@ -24,6 +25,9 @@ public:
     // [from, to) becomes `rec`, snapshots in between go, the rest stays.
     void splice(const Plan& plan, Tick from, Tick to, const std::vector<uint64_t>& rec);
     void clear();
+    // An extra snapshot at t on the current plan, until unpinned (0: none taken).
+    int pin(Tick t);
+    void unpin(int id);
     size_t size() const { return m_snaps.size(); }
     // Off: every seek restarts the level (slow, needs no snapshot).
     void setEnabled(bool on) { m_enabled = on; if (!on) dropSnaps(); }

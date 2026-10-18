@@ -33,7 +33,8 @@ private:
         m_mainLayer->addChildAtPosition(name, Anchor::Top, ccp(0.f, -44.f));
 
         const float textW = kW - 40.f;
-        auto* body = CCLabelBMFont::create(why.c_str(), "chatFont.fnt", textW / kText, kCCTextAlignmentCenter);
+        auto* body = CCLabelBMFont::create(wrapText(why, "chatFont.fnt", kText, textW).c_str(), "chatFont.fnt");
+        body->setAlignment(kCCTextAlignmentCenter);
         body->setScale(kText);
         // A long reason is shrunk as a block, never below a readable size.
         const float room = kH - 120.f;

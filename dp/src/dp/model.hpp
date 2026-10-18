@@ -568,17 +568,25 @@ inline void fireAutoTriggers(const std::vector<State>& frontier, long long t) {
 // ---- which inputs a state may take, and what taking one writes ------------------------------------
 // May the button change on tick t (--minpulse: not within g_minPulse ticks of the last change;
 // --inputgrid / --gridmap: only on the search's grid, `gridNow`, 1 or less when off)?
+// Kairos: at the same vy, the dedupe slot goes to the lower score (--fewpress: inputs, --roomy:
+// route tightness); ties keep the incumbent.
+inline bool slotTieBreak() { return g_fewPress || g_roomy; }
+inline uint32_t slotScore(const State& s) { return g_fewPress ? s.inputs : s.tight; }
+// Kairos: the button's level the human limits count edges from (State::heldSeed).
+inline int heldLevel(const State& s) { return (int)(s.action | s.heldSeed); }
 inline bool edgeLocked(const State& s, int gridNow, long long t) {
-    return (g_minPulse > 1 && (int)s.edgeAge + 1 < g_minPulse) || (gridNow > 1 && (t % gridNow) != 0);
+    return (g_minPulse > 1 && t >= g_humanFrom && (int)s.edgeAge + 1 < g_minPulse) ||   // Kairos: humanFrom
+           (gridNow > 1 && (t % gridNow) != 0);
 }
 // May `s` take `input` on tick t? Not a change the button cannot make (edgeLocked), and not an edge
 // on a tick GD cannot put one (--latgap, frames.hpp g_latGap: s.latLock). A search that steps an
 // input this refuses plans something GD will not play.
 inline bool inputAllowed(const State& s, int input, int gridNow, long long t) {
-    if (edgeLocked(s, gridNow, t) && input != (int)s.action) return false;
+    if (edgeLocked(s, gridNow, t) && input != heldLevel(s)) return false;   // Kairos: heldLevel
     if (s.latLock && input != (int)s.action) return false;
     // Kairos: --minpressgap, no press within g_minPressGap ticks of the last one.
-    if (g_minPressGap > 1 && input == 1 && s.action == 0 && (int)s.pressAge + 1 < g_minPressGap) return false;
+    if (g_minPressGap > 1 && t >= g_humanFrom && input == 1 && heldLevel(s) == 0 && (int)s.pressAge + 1 < g_minPressGap)
+        return false;
     return true;
 }
 // What taking `input` from `prev` writes into the stepped child `c`: its own action (keyOf reads it,
@@ -586,10 +594,11 @@ inline bool inputAllowed(const State& s, int input, int gridNow, long long t) {
 // lock (a mode with latency 2 entered from one without).
 inline void noteInput(const State& prev, State& c, int input) {
     c.action = (uint8_t)input;
+    c.heldSeed = 0;   // Kairos
     if (g_minPulse > 1)
-        c.edgeAge = (input != (int)prev.action) ? 0 : (uint8_t)std::min(254, (int)prev.edgeAge + 1);
+        c.edgeAge = (input != heldLevel(prev)) ? 0 : (uint8_t)std::min(254, (int)prev.edgeAge + 1);
     if (g_minPressGap > 1)   // Kairos: --minpressgap
-        c.pressAge = (input == 1 && prev.action != 1) ? 0 : (uint8_t)std::min(254, (int)prev.pressAge + 1);
+        c.pressAge = (input == 1 && heldLevel(prev) != 1) ? 0 : (uint8_t)std::min(254, (int)prev.pressAge + 1);
     if (g_fewPress)   // Kairos: --fewpress
         c.inputs = (uint16_t)std::min(0xffff, (int)prev.inputs + (input != (int)prev.action ? 1 : 0));
     const auto lat2 = [](uint8_t m) { return m == 1 || m == 3; };

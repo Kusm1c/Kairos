@@ -472,7 +472,11 @@ inline std::string defaultsProfile() {
     put(s, "g_twinAudit", g_twinAudit);
     put(s, "g_minPulse", g_minPulse);
     put(s, "g_minPressGap", g_minPressGap);
+    put(s, "g_humanFrom", g_humanFrom);
+    put(s, "g_startEdgeAge", g_startEdgeAge);
+    put(s, "g_startPressAge", g_startPressAge);
     put(s, "g_fewPress", g_fewPress);
+    put(s, "g_roomy", g_roomy);
     put(s, "g_tightPx", g_tightPx);
     put(s, "g_inputGrid", g_inputGrid);
     put(s, "g_coinProbeMaxX", g_coinProbeMaxX);

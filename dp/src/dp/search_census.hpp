@@ -52,10 +52,23 @@ inline int g_inputGrid = 0;
 // (State::pressAge): no faster clicking than 240/K per second is planned. Releases stay free, so
 // a parent always keeps a child, as under --minpulse.
 inline int g_minPressGap = 0;
+// Kairos: --humanfrom T  --minpulse and --minpressgap hold only for inputs on tick T or later (a
+// wall passed only without them, behind the run).
+inline long long g_humanFrom = 0;
+// Kairos: --startages E,P  at an anchor, ticks since the button last changed and since it was last
+// pressed (the plan behind it), seeding State::edgeAge / pressAge: an anchor started them free, so
+// the tail could press 4 ticks after the prefix's release. -1 = not said.
+inline int g_startEdgeAge = -1;
+inline int g_startPressAge = -1;
 // Kairos: --fewpress  of the states that reach the goal, the one whose lineage has the fewest inputs
 // (presses and releases, State::inputs) wins, the route score breaking ties. A goal pick only, as the
 // route score.
 inline bool g_fewPress = false;
+// Kairos: --roomy  at the same dedupe cell and vy the lineage with the lower route score
+// (State::tight) keeps the slot instead of the first one, and only hazards count as tight (a wave
+// sliding on a floor is safe): the route keeps room all along, not only at the goal pick. The same
+// states are kept up to that choice, so reachability does not change.
+inline bool g_roomy = false;
 // --gridmap x0:k0,x1:k1,...: the input grid as a step function of the frontier's leading x (the
 // previous layer's, as --capmap reads it). From x_i on the grid is k_i, where 0 means
 // --inputgrid's value and 1 means none; before the first entry it is --inputgrid. Empty =

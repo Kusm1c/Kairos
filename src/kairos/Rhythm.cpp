@@ -31,6 +31,9 @@ struct Note {
     double holdEnd = 0;   // press notes: where the hold ends
     double early = kUnknownWindow, late = kUnknownWindow;
     bool known = false;   // frame windows measured
+    int width = 0;        // ticks
+    bool limited = false; // a side stopped by the cap or a neighbour: at least `width`
+    CCNode* marker = nullptr;
     bool judged = false;
     bool counts = true;   // judged at all (wide releases are not)
     Grade grade = Grade::None;
@@ -86,6 +89,7 @@ public:
 
     ~RhythmOverlay() override {
         if (g_overlay == this) g_overlay = nullptr;
+        if (m_markerRoot) m_markerRoot->removeFromParent();
     }
 
     PlayLayer* layer() const { return m_layer; }
@@ -135,6 +139,10 @@ private:
         m_demo = demo;
         m_pxPerTick = (float)Mod::get()->getSettingValue<int64_t>("rhythm-speed") / 240.f;
         buildNotes(plan, w);
+        if (Mod::get()->getSettingValue<bool>("window-markers") && layer->m_objectLayer) {
+            m_markerRoot = CCNode::create();
+            layer->m_objectLayer->addChild(m_markerRoot, 1000);
+        }
 
         // A narrow column at the left edge, behind the player: notes fall to the hit line.
         // Two players: P1 left lane, P2 right lane.
@@ -191,6 +199,8 @@ private:
                     if (e.player != ch || e.hold != i) continue;
                     Note& n = e.press ? press : release;
                     n.known = true;
+                    n.width = e.early + e.late + 1;
+                    n.limited = e.earlyLimited || e.lateLimited;
                     n.early = e.early + (e.earlyLimited ? 0.5 : 0.0);
                     n.late = e.late + (e.lateLimited ? 0.5 : 0.0);
                 }
@@ -278,7 +288,13 @@ private:
         // Respawn or restart: what lies ahead is played again.
         if (t < m_lastNow - 0.5) {
             for (auto& n : m_notes)
-                if (n.tick >= t - 0.5) { n.judged = false; n.grade = Grade::None; }
+                if (n.tick >= t - 0.5) {
+                    n.judged = false;
+                    n.grade = Grade::None;
+                    if (n.marker) n.marker->removeFromParent();
+                    n.marker = nullptr;
+                }
+            m_nextMark = 0;
             m_combo = 0;
             if (t < 1.0) {
                 ++m_attempts;
@@ -294,7 +310,39 @@ private:
             n.grade = Grade::Missed;
             record(n);
         }
+        placeMarkers(t);
         draw(t);
+    }
+
+    // By the player where each note's tick is reached: its window in frames.
+    void placeMarkers(double t) {
+        if (!m_markerRoot) return;
+        for (; m_nextMark < m_notes.size() && m_notes[m_nextMark].tick <= t; ++m_nextMark) {
+            Note& n = m_notes[m_nextMark];
+            if (!n.known || n.marker) continue;
+            auto* player = n.channel ? m_layer->m_player2 : m_layer->m_player1;
+            if (!player) continue;
+            const float r = n.press ? 8.f : 6.f;
+            auto* node = CCNode::create();
+            auto* dot = CCDrawNode::create();
+            // drawDot is square here.
+            auto disc = [&](float rad, ccColor4F c) {
+                CCPoint v[24];
+                for (int i = 0; i < 24; ++i)
+                    v[i] = ccp(rad * std::cos(i * 0.2617994f), rad * std::sin(i * 0.2617994f));
+                dot->drawPolygon(v, 24, c, 0.f, c);
+            };
+            disc(r + 1.f, rgba(0, 0, 0, 0.6f));
+            disc(r, widthColor(n.width, n.press ? 0.95f : 0.75f));
+            node->addChild(dot);
+            auto* l = CCLabelBMFont::create(fmt::format("{}{}", n.width, n.limited ? "+" : "").c_str(), "bigFont.fnt");
+            fitLabel(l, r * 1.6f, 0.3f, 0.1f);
+            node->addChild(l);
+            const auto pos = player->getPosition();
+            node->setPosition({pos.x, pos.y + (n.press ? 18.f : -18.f)});
+            m_markerRoot->addChild(node);
+            n.marker = node;
+        }
     }
 
     float yOf(double tick, double t) const { return m_hitY + (float)((tick - t) * m_pxPerTick); }
@@ -410,6 +458,8 @@ private:
     std::unordered_map<CheckpointObject*, double> m_cpClock;
     int m_total = 0, m_extra = 0, m_combo = 0, m_bestCombo = 0, m_attempts = 1;
     std::deque<Recent> m_recent;
+    Ref<CCNode> m_markerRoot;   // in the level's object layer
+    size_t m_nextMark = 0;
 };
 
 } // namespace

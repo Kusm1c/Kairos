@@ -10,7 +10,7 @@
 
 namespace kp {
 
-enum class JobKind { FindPath, Windows, Watch, Optimize, Rhythm };
+enum class JobKind { FindPath, Windows, Watch, Optimize, Rhythm, Check };
 
 struct JobRequest {
     JobKind kind = JobKind::FindPath;
@@ -18,7 +18,13 @@ struct JobRequest {
     kpsim::macro::Plan merged;   // the same on one button (1-player levels)
     std::string source;        // macro file name
     kpsim::search::WindowReport windows;   // Watch / Rhythm: the macro's frame windows, if measured
+    size_t firstClicks = 0;   // Windows: only these first clicks, shown and not saved
+    std::string fitLimits;    // Optimize: where the solver dropped the human limits ("" = it did not)
+    kpsim::search::EdgeTests check;   // Check: a narrow edge's tries
 };
+
+// Opens the level on a narrow edge and replays its tries one by one (setting window-check-tests).
+void startCheck(GJGameLevel* level, const kpsim::search::EdgeTests& tests);
 
 // The level's last frame windows, if they were measured on this very plan.
 kpsim::search::WindowReport windowsFor(GJGameLevel* level, const kpsim::macro::Plan& plan);

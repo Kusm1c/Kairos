@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <sstream>
 #include <vector>
 
@@ -88,6 +89,24 @@ std::string writeWindowFile(const WindowReport& r, const std::string& macro, uin
     for (int p = 0; p < 2; ++p)
         for (size_t i = 0; i < r.removable[p].size(); ++i)
             if (r.removable[p][i]) o << "removable " << p << " " << i << "\n";
+    for (const auto& t : r.tests) {
+        const auto& w = t.edge;
+        o << "check " << w.player << " " << w.hold << " " << (w.press ? 1 : 0) << " " << w.tick << " " << w.early << " "
+          << w.late << " " << w.ground << "\n";
+        for (const auto& x : t.tests) {
+            o << "test " << x.shift << " " << (x.passed ? 1 : 0) << " " << x.death << " ";
+            for (int p = 0; p < 2; ++p) {
+                if (p) o << "|";
+                for (const Hold& h : x.plan.channel(p)) {
+                    o << h.press << ":";
+                    if (h.release == macro::kNever) o << "n";
+                    else o << h.release;
+                    o << ",";
+                }
+            }
+            o << "\n";
+        }
+    }
     return o.str();
 }
 
@@ -124,6 +143,31 @@ bool readWindowFile(const std::string& text, WindowReport& r, std::string& macro
             w.earlyLimited = el;
             w.lateLimited = ll;
             r.edges.push_back(w);
+        } else if (tag == "check") {
+            EdgeTests t;
+            int press;
+            l >> t.edge.player >> t.edge.hold >> press >> t.edge.tick >> t.edge.early >> t.edge.late >> t.edge.ground;
+            t.edge.press = press;
+            r.tests.push_back(std::move(t));
+        } else if (tag == "test" && !r.tests.empty()) {
+            EdgeTest x;
+            int passed;
+            std::string holds;
+            l >> x.shift >> passed >> x.death >> holds;
+            x.passed = passed;
+            int p = 0;
+            for (size_t i = 0; i < holds.size();) {
+                if (holds[i] == '|') { ++p; ++i; continue; }
+                const size_t colon = holds.find(':', i), comma = holds.find(',', i);
+                if (colon == std::string::npos || comma == std::string::npos || p > 1) break;
+                Hold h;
+                h.press = (Tick)std::strtoul(holds.c_str() + i, nullptr, 10);
+                const std::string rel = holds.substr(colon + 1, comma - colon - 1);
+                h.release = rel == "n" ? macro::kNever : (Tick)std::strtoul(rel.c_str(), nullptr, 10);
+                x.plan.channel(p).push_back(h);
+                i = comma + 1;
+            }
+            r.tests.back().tests.push_back(std::move(x));
         } else if (tag == "removable") {
             int p;
             size_t i;

@@ -2,6 +2,8 @@
 #include "Engine.hpp"
 #include "InputRules.hpp"
 
+#include <string>
+
 namespace kpsim::search {
 
 // Turns a plan that finishes into a simpler one that still finishes:
@@ -15,6 +17,9 @@ struct OptimizeOptions {
     bool holdToEnd = false;   // also try holding the last press to the end (one input less)
     bool transfers = false;   // also drop a hold or a gap by giving its ticks to a neighbour (wave, ship)
     int retries = 6;       // changes the final replay refuses, dropped one at a time
+    // Room over clicks: a removal or merge may not leave an input around it with less than a tick
+    // each way, and a wave timing without that room gets a zigzag added beside it.
+    bool roomy = true;
     InputRules rules;      // minPress / minRelease kept by every change, and enforced first
 };
 
@@ -28,6 +33,7 @@ inline OptimizeOptions optimizeFor(SolveGoal goal) {
         o.rounds = 4;
         o.holdToEnd = true;
         o.transfers = true;
+        o.roomy = false;
     } else if (goal == SolveGoal::LenientWindows) {
         o.comfort = 6;
     }
@@ -40,6 +46,8 @@ struct OptimizeResult {
     size_t removed = 0, merged = 0, centered = 0;
     size_t rejected = 0;     // changes the final replay refused, dropped
     size_t humanized = 0;    // too short presses or gaps fixed
+    size_t widened = 0;      // tight wave timings given room by a zigzag beside them
+    std::string widenLog;    // what each tight timing tried
     size_t violations = 0;   // still too short at the end
     int narrowestBefore = -1, narrowestAfter = -1;   // ticks; -1: every timing had comfortable room
     uint64_t trials = 0;
