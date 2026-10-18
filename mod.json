@@ -125,12 +125,6 @@
 			"min": 0,
 			"max": 60
 		},
-		"play-menu": {
-			"type": "bool",
-			"name": "Choose the mode on Play",
-			"description": "A level's play button opens a menu: Normal, Replay or Solve. Off, the play button just plays the level, as without the mod.",
-			"default": true
-		},
 		"solve-gamble": {
 			"type": "bool",
 			"name": "Solve faster (not reproducible)",

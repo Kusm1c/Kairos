@@ -7,13 +7,11 @@
 #include <vector>
 
 namespace kpsim::search {
-
 const char* const kWidthBuckets[kWidthBucketCount] = {"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11+"};
 
 int widthBucket(int w) { return std::clamp(w, 1, kWidthBucketCount) - 1; }
 
 namespace {
-
 double phi(double x) { return 0.5 * std::erfc(-x / std::sqrt(2.0)); }
 
 // nandl.pages.dev base model: error N(0, 1/L s) at the window centre, over 10 ticks always fine.
@@ -39,7 +37,6 @@ double nandlPrecision(std::vector<std::pair<double, int>> inputs) {   // (second
     }
     return hi;
 }
-
 } // namespace
 
 WindowStats windowStats(const WindowReport& r, double sigmaMs) {
@@ -179,5 +176,4 @@ bool readWindowFile(const std::string& text, WindowReport& r, std::string& macro
     }
     return true;
 }
-
 } // namespace kpsim::search

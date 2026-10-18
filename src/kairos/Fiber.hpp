@@ -4,7 +4,6 @@
 #include <functional>
 
 namespace kp {
-
 // Runs a body in slices on the main thread (Windows fiber).
 class FiberTask {
 public:
@@ -31,5 +30,4 @@ private:
     std::exception_ptr m_error;
     std::chrono::steady_clock::time_point m_deadline;
 };
-
 } // namespace kp

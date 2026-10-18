@@ -8,9 +8,7 @@
 #include <limits>
 
 namespace kpsim::macro {
-
 namespace {
-
 bool heldIn(const Holds& holds, Tick t) {
     auto it = std::upper_bound(holds.begin(), holds.end(), t,
                                [](Tick v, const Hold& h) { return v < h.press; });
@@ -40,7 +38,6 @@ bool validHolds(const Holds& holds) {
     }
     return true;
 }
-
 } // namespace
 
 bool Plan::heldAt(Tick t, int p) const { return heldIn(channel(p), t); }
@@ -72,7 +69,6 @@ uint64_t Plan::fingerprint() const {
 }
 
 namespace {
-
 struct Event {
     uint64_t frame;
     bool down;
@@ -324,7 +320,6 @@ bool parseGdr(const std::vector<uint8_t>& bytes, Macro& m, std::vector<Event>& e
     }
     return true;
 }
-
 } // namespace
 
 bool readMacro(const std::vector<uint8_t>& bytes, Macro& out, std::string& err) {
@@ -465,5 +460,4 @@ bool writeFile(const std::filesystem::path& path, const std::vector<uint8_t>& by
     out.write(reinterpret_cast<const char*>(bytes.data()), (std::streamsize)bytes.size());
     return out.good();
 }
-
 } // namespace kpsim::macro

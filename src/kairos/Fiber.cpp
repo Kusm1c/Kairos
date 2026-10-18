@@ -55,5 +55,4 @@ void FiberTask::yieldIfDue() {
     if (!t || std::chrono::steady_clock::now() < t->m_deadline) return;
     SwitchToFiber(t->m_main);
 }
-
 } // namespace kp

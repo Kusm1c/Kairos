@@ -1,5 +1,3 @@
-// While a bot searches (Solve, Kairos jobs) the level is hidden: replayed out of order, its flashes
-// and colour changes strobe. Watch and rhythm practice are never hidden.
 #include "CalmScreen.hpp"
 #include "GameEngine.hpp"
 #include "ModGuard.hpp"
@@ -12,7 +10,6 @@ using namespace geode::prelude;
 
 namespace kp {
 namespace {
-
 struct Calm {
     Ref<CCLayer> cover;
     PlayLayer* layer = nullptr;   // compared only, never touched once it is not PlayLayer::get()
@@ -47,7 +44,6 @@ void poll() {
     g.cover = cover;
     g.layer = pl;
 }
-
 } // namespace
 } // namespace kp
 

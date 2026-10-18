@@ -8,7 +8,6 @@
 #include <vector>
 
 namespace kp {
-
 void captureEngineSnap(PlayerObject* player, kpsim::engine::EngineSnap& out);
 
 // Not reproducible between attempts, or only a cache.
@@ -42,5 +41,4 @@ void copyLayer(PlayLayer* layer, LayerCopy& out);
 void pasteGameState(PlayLayer* layer, const LayerCopy& in);
 // Plain layer fields that differ from the copy.
 std::string layerDiff(PlayLayer* layer, const LayerCopy& in);
-
 } // namespace kp

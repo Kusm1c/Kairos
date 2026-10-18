@@ -5,7 +5,6 @@
 #include <string>
 
 namespace kp {
-
 // A job's progress at the top of the screen: title, status, bar and time left.
 class ProgressPanel : public cocos2d::CCNode {
 public:
@@ -29,5 +28,4 @@ private:
     std::function<void()> m_stop;
     void stopClicked(cocos2d::CCObject*);
 };
-
 } // namespace kp

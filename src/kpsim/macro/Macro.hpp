@@ -5,7 +5,6 @@
 #include <vector>
 
 namespace kpsim::macro {
-
 // Physics step index; the first step after a reset is 1.
 using Tick = uint32_t;
 constexpr Tick kNever = UINT32_MAX;
@@ -66,5 +65,4 @@ std::string writeSolverPlan(const Plan& plan);
 
 std::vector<uint8_t> writeGdr2(const Plan& plan, uint32_t levelId, const std::string& levelName);
 bool writeFile(const std::filesystem::path& path, const std::vector<uint8_t>& bytes);
-
 } // namespace kpsim::macro

@@ -7,7 +7,6 @@
 using namespace geode::prelude;
 
 namespace kp {
-
 namespace {
 constexpr float kW = 380.f, kH = 64.f;
 
@@ -133,5 +132,4 @@ void ProgressPanel::update(float dt) {
     const float x = (1.f + seg) * m_phase - seg;
     showFill(x, x + seg);
 }
-
 } // namespace kp

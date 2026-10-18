@@ -18,7 +18,6 @@
 using namespace geode::prelude;
 
 namespace {
-
 bool checkLevel(GJGameLevel* level) {
     if (!level || std::string(level->m_levelString).empty()) {
         FLAlertLayer::create("Kairos", "Download the level first.", "OK")->show();
@@ -57,12 +56,12 @@ std::optional<std::filesystem::path> pickFile() {
     return std::filesystem::path(buf);
 }
 
-void pickMacro(GJGameLevel* level, kp::JobKind kind, size_t firstClicks = 0) {
+void pickMacro(GJGameLevel* level, kp::JobKind kind, bool follow = false) {
     auto path = pickFile();
     if (!path) return;
     kp::JobRequest req;
     req.kind = kind;
-    req.firstClicks = firstClicks;
+    req.follow = follow;
     req.source = path->filename().string();
     if (!loadPlan(*path, req)) return;
     req.windows = kp::windowsFor(level, req.plan);
@@ -128,7 +127,6 @@ SolutionInfo solutionInfo(GJGameLevel* level) {
     return info;
 }
 
-
 // The plan of the level that the last frame windows were measured on, if it is still there.
 std::optional<kpsim::macro::Plan> windowsPlan(GJGameLevel* level) {
     kp::JobRequest req;
@@ -137,21 +135,30 @@ std::optional<kpsim::macro::Plan> windowsPlan(GJGameLevel* level) {
     return req.plan;
 }
 
+// Two windows: a macro (played by a human, the best base), and the bot's solution and Solve.
 class KairosPopup : public geode::Popup {
 protected:
     Ref<GJGameLevel> m_level;
+    std::function<bool()> m_solve;   // opens the solver's mode menu
+    bool m_bot = false;
 
-    bool init(GJGameLevel* level) {
+    struct B {
+        const char* text;
+        const char* bg;
+        SEL_MenuHandler sel;
+    };
+
+    bool init(GJGameLevel* level, std::function<bool()> solve, bool bot) {
         m_level = level;
-        if (!Popup::init(380.f, 280.f)) return false;
-        this->setTitle("Kairos");
+        m_solve = std::move(solve);
+        m_bot = bot;
+        if (!Popup::init(380.f, bot ? 230.f : 200.f)) return false;
+        this->setTitle(bot ? "Bot solution" : "Kairos");
         auto size = m_mainLayer->getContentSize();
         auto menu = CCMenu::create();
         menu->setPosition(0, 0);
         m_mainLayer->addChild(menu);
-        // A row of buttons, evenly spread.
-        struct B { const char* text; const char* bg; SEL_MenuHandler sel; };
-        auto rowOf = [&](float y, float scale, const std::vector<B>& bs) {
+        auto row = [&](float y, float scale, const std::vector<B>& bs) {
             const float step = (size.width - 30.f) / (float)bs.size();
             float x = 15.f + step / 2.f;
             for (const auto& b : bs) {
@@ -162,49 +169,59 @@ protected:
                 x += step;
             }
         };
-        auto row = [&](float y, float scale, std::initializer_list<B> bs) { rowOf(y, scale, std::vector<B>(bs)); };
-        auto heading = [&](const char* text, float y) {
-            auto* l = CCLabelBMFont::create(text, "goldFont.fnt");
-            l->setScale(0.5f);
+        auto line = [&](const std::string& text, float y, ccColor3B color) {
+            auto* l = CCLabelBMFont::create(text.c_str(), "chatFont.fnt");
+            kp::fitLabel(l, size.width - 30.f, 0.55f);
+            l->setColor(color);
             l->setPosition(size.width / 2.f, y);
             m_mainLayer->addChild(l);
         };
-        float y = size.height - 52.f;
+        const float top = size.height - 46.f;
+        if (!bot) {
+            line("Your macro (.gdr2 / .gdr), played by a human: the best base", top, {140, 255, 140});
+            row(top - 30.f, 0.5f, {{"Rhythm", "GJ_button_01.png", menu_selector(KairosPopup::onRhythmMacro)},
+                                   {"Windows", "GJ_button_01.png", menu_selector(KairosPopup::onWindows)},
+                                   {"Watch", "GJ_button_01.png", menu_selector(KairosPopup::onWatch)}});
+            std::vector<B> more{{"Bot solution", "GJ_button_04.png", menu_selector(KairosPopup::onBot)},
+                                {"Folder", "GJ_button_05.png", menu_selector(KairosPopup::onFolder)}};
+            if (std::filesystem::exists(kp::statsPath(level)))
+                more.push_back({"Windows stats", "GJ_button_05.png", menu_selector(KairosPopup::onStats)});
+            row(26.f, 0.4f, more);
+            return true;
+        }
         if (hasSolution(level)) {
             const auto info = solutionInfo(level);
-            auto line = [&](const std::string& text, float at, ccColor3B color) {
-                auto* l = CCLabelBMFont::create(text.c_str(), "chatFont.fnt");
-                kp::fitLabel(l, size.width - 30.f, 0.55f);
-                l->setColor(color);
-                l->setPosition(size.width / 2.f, at);
-                m_mainLayer->addChild(l);
-            };
-            line(info.inputs, size.height - 38.f, {235, 235, 235});
-            if (!info.timing.empty()) line(info.timing, size.height - 51.f, info.color);
-            y -= 24.f;
-            heading("Solution", y);
-            row(y - 24.f, 0.42f, {{"Rhythm", "GJ_button_01.png", menu_selector(KairosPopup::onRhythmSolution)},
-                                  {"Optimize", "GJ_button_01.png", menu_selector(KairosPopup::onOptimize)},
-                                  {"Windows", "GJ_button_02.png", menu_selector(KairosPopup::onSolutionWindows)}});
-            row(y - 56.f, 0.42f, {{"Watch", "GJ_button_02.png", menu_selector(KairosPopup::onSolutionWatch)},
-                                  {"First 12", "GJ_button_02.png", menu_selector(KairosPopup::onFirstClicks)},
-                                  {"Export .gdr2", "GJ_button_02.png", menu_selector(KairosPopup::onExport)}});
-            y -= 92.f;
+            line(info.inputs, top, {235, 235, 235});
+            if (!info.timing.empty()) line(info.timing, top - 12.f, info.color);
+            row(top - 38.f, 0.42f, {{"Rhythm", "GJ_button_02.png", menu_selector(KairosPopup::onRhythmSolution)},
+                                    {"Optimize", "GJ_button_02.png", menu_selector(KairosPopup::onOptimize)},
+                                    {"Windows", "GJ_button_02.png", menu_selector(KairosPopup::onSolutionWindows)}});
+            row(top - 70.f, 0.42f, {{"Watch", "GJ_button_02.png", menu_selector(KairosPopup::onSolutionWatch)},
+                                    {"Export .gdr2", "GJ_button_02.png", menu_selector(KairosPopup::onExport)}});
+        } else {
+            line("No solution yet: Solve finds one.", top, {200, 200, 200});
         }
-        heading("A macro (.gdr2 / .gdr)", y);
-        row(y - 24.f, 0.42f, {{"Rhythm", "GJ_button_01.png", menu_selector(KairosPopup::onRhythmMacro)},
-                              {"Windows", "GJ_button_02.png", menu_selector(KairosPopup::onWindows)},
-                              {"First 12", "GJ_button_02.png", menu_selector(KairosPopup::onFirstClicksMacro)},
-                              {"Watch", "GJ_button_02.png", menu_selector(KairosPopup::onWatch)}});
-        // 1-player levels are solved from the Play button; the exact search is for 2 players.
-        const bool stats = std::filesystem::exists(kp::statsPath(level));
-        std::vector<B> tools;
-        if (stats) tools.push_back({"Windows stats", "GJ_button_03.png", menu_selector(KairosPopup::onStats)});
+        std::vector<B> bots;
+        if (m_solve) bots.push_back({"Solve", "GJ_button_01.png", menu_selector(KairosPopup::onSolve)});
         if (level->m_twoPlayerMode)
-            tools.push_back({"Find path (2P)", "GJ_button_05.png", menu_selector(KairosPopup::onFindPath)});
-        tools.push_back({"Folder", "GJ_button_05.png", menu_selector(KairosPopup::onFolder)});
-        rowOf(30.f, 0.4f, tools);
+            bots.push_back({"Find path (2P)", "GJ_button_01.png", menu_selector(KairosPopup::onFindPath)});
+        if (!bots.empty()) row(28.f, 0.5f, bots);
         return true;
+    }
+
+    void onBot(CCObject*) {
+        Ref<GJGameLevel> level = m_level;
+        auto solve = m_solve;
+        this->onClose(nullptr);
+        if (auto p = create(level, solve, true)) p->show();
+    }
+
+    void onSolve(CCObject*) {
+        auto solve = m_solve;
+        this->onClose(nullptr);
+        if (solve && !solve())
+            FLAlertLayer::create("Kairos", "The solver cannot open here (a platformer level, or not downloaded yet).",
+                                 "OK")->show();
     }
 
     void onFindPath(CCObject*) {
@@ -218,12 +235,6 @@ protected:
         auto level = m_level;
         this->onClose(nullptr);
         pickMacro(level, kp::JobKind::Windows);
-    }
-    void onFirstClicksMacro(CCObject*) {
-        if (!checkLevel(m_level)) return;
-        auto level = m_level;
-        this->onClose(nullptr);
-        pickMacro(level, kp::JobKind::Windows, 12);
     }
     void onWatch(CCObject*) {
         if (!checkLevel(m_level)) return;
@@ -269,23 +280,31 @@ protected:
                          });
     }
     void onOptimize(CCObject*) { fromSolution(kp::JobKind::Optimize); }
-    // The windows of the first 12 clicks, quickly, to check by hand.
-    void onFirstClicks(CCObject*) {
-        if (!checkLevel(m_level)) return;
-        auto level = m_level;
-        kp::JobRequest req;
-        req.kind = kp::JobKind::Windows;
-        req.firstClicks = 12;
-        this->onClose(nullptr);
-        if (!loadSolution(level, req)) return;
-        kp::startJob(level, std::move(req));
+    // Rhythm practice: the macro playing while the player clicks along, or the player playing.
+    static void chooseRhythm(std::function<void(bool follow)> go) {
+        createQuickPopup("Rhythm practice",
+                         "<cg>Auto</c>: the macro plays and the game ignores your clicks; they are judged against "
+                         "the notes.\n<cy>You play</c>: the game is yours, the notes run beside it.",
+                         "Auto", "You play", [go](FLAlertLayer*, bool play) { go(!play); });
     }
-    void onRhythmSolution(CCObject*) { fromSolution(kp::JobKind::Rhythm); }
+    void onRhythmSolution(CCObject*) {
+        if (!checkLevel(m_level)) return;
+        Ref<GJGameLevel> level = m_level;
+        this->onClose(nullptr);
+        chooseRhythm([level](bool follow) {
+            kp::JobRequest req;
+            req.kind = kp::JobKind::Rhythm;
+            req.follow = follow;
+            if (!loadSolution(level, req)) return;
+            req.windows = kp::windowsFor(level, req.plan);
+            kp::startJob(level, std::move(req));
+        });
+    }
     void onRhythmMacro(CCObject*) {
         if (!checkLevel(m_level)) return;
-        auto level = m_level;
+        Ref<GJGameLevel> level = m_level;
         this->onClose(nullptr);
-        pickMacro(level, kp::JobKind::Rhythm);
+        chooseRhythm([level](bool follow) { pickMacro(level, kp::JobKind::Rhythm, follow); });
     }
     void onSolutionWatch(CCObject*) { fromSolution(kp::JobKind::Watch); }
     void onStats(CCObject*) {
@@ -311,9 +330,9 @@ protected:
     }
 
 public:
-    static KairosPopup* create(GJGameLevel* level) {
+    static KairosPopup* create(GJGameLevel* level, std::function<bool()> solve = {}, bool bot = false) {
         auto* p = new KairosPopup();
-        if (p->init(level)) {
+        if (p->init(level, std::move(solve), bot)) {
             p->autorelease();
             return p;
         }
@@ -349,8 +368,13 @@ void place(CCNode* host, CCMenu* preferred, CCMenuItemSpriteExtra* button) {
     menu->addChild(button);
     host->addChild(menu, 200);
 }
-
 } // namespace
+
+bool kp::isSolutionPlan(GJGameLevel* level, const kpsim::macro::Plan& plan) {
+    kp::JobRequest req;
+    if (!loadSolution(level, req, true)) return false;
+    return req.plan.fingerprint() == plan.fingerprint() || req.merged.fingerprint() == plan.fingerprint();
+}
 
 class $modify(KpLevelInfoLayer, LevelInfoLayer) {
     bool init(GJGameLevel* level, bool challenge) {
@@ -360,7 +384,8 @@ class $modify(KpLevelInfoLayer, LevelInfoLayer) {
         return true;
     }
     void onKairosMenu(CCObject*) {
-        if (auto p = KairosPopup::create(m_level)) p->show();
+        Ref<LevelInfoLayer> self = this;
+        if (auto p = KairosPopup::create(m_level, [self] { return kp::openSolveMenu(self.data()); })) p->show();
     }
 };
 
@@ -371,6 +396,7 @@ class $modify(KpEditLevelLayer, EditLevelLayer) {
         return true;
     }
     void onKairosMenu(CCObject*) {
-        if (auto p = KairosPopup::create(m_level)) p->show();
+        Ref<EditLevelLayer> self = this;
+        if (auto p = KairosPopup::create(m_level, [self] { return kp::openSolveMenu(self.data()); })) p->show();
     }
 };

@@ -4,7 +4,6 @@
 #include <functional>
 
 namespace kpsim::search {
-
 struct Try {
     bool ok = false;
     Tick death = 0;   // failed: when it died, or the goal it missed
@@ -38,9 +37,6 @@ struct ShiftOptions {
 // In flight (ship, UFO, swing) a player steers on and on.
 inline constexpr ShiftOptions kSteer{6, 6, 30, 0};
 
-// Edge moved by d; if that alone fails, the next inputs on the button re-timed as a player
-// correcting it would. `valid` adds rules to the hold order (human limits).
 Shift shiftEdge(const Plan& plan, EdgeRef e, int d, const std::function<Try(const Plan&)>& attempt,
                 const std::function<bool(const Holds&, size_t)>& valid = {}, const ShiftOptions& so = {});
-
 } // namespace kpsim::search

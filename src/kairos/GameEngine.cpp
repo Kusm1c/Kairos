@@ -15,14 +15,12 @@ using namespace geode::prelude;
 using kpsim::search::Outcome;
 
 namespace kp {
-
 GameEngine* GameEngine::s_active = nullptr;
 
 bool engineResetting() { return GameEngine::active() && GameEngine::active()->ownReset(); }
 bool engineStepping() { return GameEngine::active() && !GameEngine::active()->frozen(); }
 
 namespace {
-
 constexpr Tick kChunk = 240;
 constexpr Tick kFirstChunk = 8;   // runs that may stop early start small
 
@@ -38,7 +36,6 @@ int64_t& global(uintptr_t rva) { return *reinterpret_cast<int64_t*>(geode::base:
 int64_t& field(PlayLayer* l, size_t off) { return *reinterpret_cast<int64_t*>(reinterpret_cast<uint8_t*>(l) + off); }
 
 uint64_t mix(uint64_t a, uint64_t b) { return (a ^ (b + 0x9E3779B97F4A7C15ull + (a << 6) + (a >> 2))); }
-
 } // namespace
 
 GameEngine::GameEngine(PlayLayer* layer) : m_layer(layer) {
@@ -194,6 +191,10 @@ uint64_t GameEngine::stateHash() {
 }
 
 float GameEngine::playerX() { return m_layer->m_player1 ? m_layer->m_player1->getPositionX() : 0.f; }
+float GameEngine::playerY(int player) {
+    auto* p = player ? m_layer->m_player2 : m_layer->m_player1;
+    return p ? p->getPositionY() : 0.f;
+}
 
 int GameEngine::mode(int player) {
     auto* p = player ? m_layer->m_player2 : m_layer->m_player1;
@@ -215,6 +216,14 @@ void GameEngine::onStep(GJBaseGameLayer* layer) {
     if (m_stop != Outcome::Reached) return;
     observe();
     if (m_stop != Outcome::Reached) return;
+    if (forbidden && m_tick)
+        if (auto* p = forbiddenPlayer ? m_layer->m_player2 : m_layer->m_player1;
+            p && forbidden(m_layer->m_player1->getPositionX(), p->getPositionY())) {
+            m_stop = Outcome::Died;
+            m_stopTick = m_tick;
+            m_deathPlayer = forbiddenPlayer;
+            return;
+        }
     ++m_tick;
     ++m_stats.steps;
     for (int p = 0; p < 2; ++p) {
@@ -303,11 +312,9 @@ void GameEngine::onFinish() {
     m_stop = Outcome::Finished;
     m_stopTick = m_tick;
 }
-
 } // namespace kp
 
 namespace {
-
 // Inside one of the engine's restores: the time goes to `field`.
 struct RestoreTimer {
     double* field = nullptr;
@@ -327,7 +334,6 @@ kp::GameEngine* engineFor(GJBaseGameLayer* layer) {
     auto* e = kp::GameEngine::active();
     return e && static_cast<GJBaseGameLayer*>(e->layer()) == layer ? e : nullptr;
 }
-
 } // namespace
 
 class $modify(KpEngineLayer, GJBaseGameLayer) {
@@ -351,9 +357,6 @@ class $modify(KpEngineLayer, GJBaseGameLayer) {
         GJBaseGameLayer::resetLevelVariables();
         e->statsRef().varsMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     }
-    // A restore puts the sound back where the checkpoint had it (pause, FMOD state, the SFX and song
-    // triggers already passed: 45 ms a restore on Solar Flare, 95% of it). Sound only, and the job's
-    // last real reset does it again. Skipped inside the engine's restores.
     void pauseAudio() {
         if (auto* e = engineFor(this); e && e->ownReset()) {
             ++e->statsRef().audioSkips;

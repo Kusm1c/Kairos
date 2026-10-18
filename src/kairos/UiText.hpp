@@ -5,9 +5,6 @@
 #include <string>
 
 namespace kp {
-
-// A label at `scale`, shrunk to `maxWidth` but never under `minScale`. Past that the text is cut
-// with "...": a longer text belongs in a details view, not in a smaller font.
 inline void fitLabel(cocos2d::CCLabelBMFont* l, float maxWidth, float scale, float minScale = 0.45f) {
     l->setScale(scale);
     const float w = l->getContentSize().width;
@@ -55,5 +52,4 @@ inline std::string wrapText(const std::string& text, const char* font, float sca
     flushWord();
     return out + line;
 }
-
 } // namespace kp

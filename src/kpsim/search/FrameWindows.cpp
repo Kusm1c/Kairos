@@ -8,7 +8,6 @@
 
 namespace kpsim::search {
 namespace {
-
 constexpr Tick kLimit = 240u * 60u * 30u;   // 30 min
 constexpr Tick kFinishSlack = 2400;
 constexpr Tick kLearn = 240;
@@ -28,7 +27,6 @@ size_t breaches(const InputRules& r, const Plan& p) {
         }
     return n;
 }
-
 } // namespace
 
 void findWindows(Engine& engine, const Plan& plan, const WindowOptions& o, WindowReport& out) {
@@ -193,7 +191,7 @@ void findWindows(Engine& engine, const Plan& plan, const WindowOptions& o, Windo
     // Edges join the report once measured: a stopped run shows only those.
     std::vector<EdgeWindow> edges;
     for (int ch = 0; ch < 2; ++ch)
-        for (size_t i = 0; i < plan.channel(ch).size() && (!o.holds || i < o.holds); ++i) {
+        for (size_t i = 0; i < plan.channel(ch).size(); ++i) {
             const Hold& h = plan.channel(ch)[i];
             if (finished && h.press > out.base.tick) continue;   // after the end
             edges.push_back({ch, i, true, h.press});
@@ -276,8 +274,6 @@ void findWindows(Engine& engine, const Plan& plan, const WindowOptions& o, Windo
                     r = shiftEdge(cur, {w.player, w.hold, w.press}, dir * (shift + 1), trial, {}, steer);
                     out.retimed += r.retimed;
                 }
-                // An input that changes nothing here (a release in the air): one tick and the whole
-                // range both rejoin the run at once, so the side is the range.
                 if (r.result == Shift::Passed && shift == 0 && !r.followed && rejoinedAtOnce && !exact && fast &&
                     !flying && o.maxShift > 1) {
                     std::vector<Plan> plans;
@@ -353,7 +349,7 @@ void findWindows(Engine& engine, const Plan& plan, const WindowOptions& o, Windo
             }
         }
         // A press made in the air: GD buffers it (m_jumpBuffered) and jumps later.
-        if (w.press && w.tick > 1 && (o.holds || w.early == 0 || w.late == 0)) {
+        if (w.press && w.tick > 1 && (w.early == 0 || w.late == 0)) {
             tl.seek(w.tick - 1);
             engine.run(cur, w.tick - 1);
             const int m = engine.mode(w.player);
@@ -454,5 +450,4 @@ void findWindows(Engine& engine, const Plan& plan, const WindowOptions& o, Windo
     out.snapshotsTrusted = tl.enabled();
     out.complete = true;
 }
-
 } // namespace kpsim::search

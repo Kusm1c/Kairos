@@ -6,9 +6,7 @@
 
 namespace kpsim::search {
 namespace {
-
 constexpr Tick kProgress = 8;   // a re-timing must push the death this much later to go on
-
 } // namespace
 
 bool holdOrdered(const Holds& h, size_t i) {
@@ -104,5 +102,4 @@ Shift shiftEdge(const Plan& plan, EdgeRef e, int d, const std::function<Try(cons
     out.plan = std::move(furthest);
     return out;
 }
-
 } // namespace kpsim::search

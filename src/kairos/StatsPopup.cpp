@@ -16,7 +16,6 @@ using kpsim::search::WindowReport;
 
 namespace kp {
 namespace {
-
 constexpr size_t kListed = 200;   // tightest edges shown
 
 ccColor3B widthColor(int width) {
@@ -64,8 +63,6 @@ private:
         const auto st = kpsim::search::windowStats(r, sigma);
         const bool two = std::any_of(r.edges.begin(), r.edges.end(), [](auto& w) { return w.player == 1; });
 
-        // Top band: what was measured on the left, the buttons on the right. Then the summary at
-        // full width, then the histogram (left) and the list (right) below it.
         float y = size.height - 46.f;
         const char* outcome = r.base.outcome == kpsim::search::Outcome::Finished ? "finished"
                               : r.base.outcome == kpsim::search::Outcome::Died  ? "died"
@@ -187,8 +184,6 @@ private:
                 auto* b = CCMenuItemSpriteExtra::create(spr, this, menu_selector(StatsPopup::onCheck));
                 b->setTag((int)m_rowTests.size());
                 m_rowTests.push_back(*tests);
-                // One menu per row: the scroll layer hides each child that leaves the view, and a
-                // single menu for the whole list sat at its bottom, hidden at the top.
                 const auto bs = spr->getScaledContentSize();
                 auto* m = CCMenu::create();
                 m->setContentSize(bs);
@@ -235,7 +230,6 @@ private:
     CCLabelBMFont* m_caption = nullptr;
     bool m_byTime = false;
 };
-
 } // namespace
 
 void showWindowStats(const WindowReport& r, const std::string& macro, std::function<void()> practice, CheckEdge check) {
@@ -254,5 +248,4 @@ bool showWindowStatsFile(const std::filesystem::path& path, std::function<void()
     showWindowStats(r, macro, std::move(practice), std::move(check));
     return true;
 }
-
 } // namespace kp

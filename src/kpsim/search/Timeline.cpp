@@ -3,7 +3,6 @@
 #include <algorithm>
 
 namespace kpsim::search {
-
 RunResult Timeline::advance(const Plan& plan, Tick until, std::vector<uint64_t>* nearTrace,
                             std::vector<uint64_t>* looseTrace) {
     m_plan = plan;
@@ -117,7 +116,6 @@ void Timeline::clear() {
 }
 
 namespace {
-
 std::vector<Tick> edges(const Holds& h) {
     std::vector<Tick> e;
     for (auto& x : h) { e.push_back(x.press); e.push_back(x.release); }
@@ -143,7 +141,6 @@ Tick lastIn(const Holds& a, const Holds& b) {
     Tick tb = j > 0 ? eb[j - 1] : 0;
     return std::max(ta, tb);
 }
-
 } // namespace
 
 Tick firstDifference(const Plan& a, const Plan& b) {
@@ -153,5 +150,4 @@ Tick firstDifference(const Plan& a, const Plan& b) {
 Tick lastDifference(const Plan& a, const Plan& b) {
     return std::max(lastIn(a.holds, b.holds), lastIn(a.holds2, b.holds2));
 }
-
 } // namespace kpsim::search

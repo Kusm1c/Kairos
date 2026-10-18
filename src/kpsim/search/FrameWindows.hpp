@@ -5,7 +5,6 @@
 #include <vector>
 
 namespace kpsim::search {
-
 struct EdgeWindow {
     int player = 0;             // button: 0 = player 1, 1 = player 2
     size_t hold = 0;
@@ -39,7 +38,6 @@ struct WindowOptions {
     bool removals = true;
     bool strict = false;   // every trial to the goal (slow)
     bool center = true;    // each edge played mid-window before the next is measured
-    size_t holds = 0;      // only the first holds of each button (0: all)
     InputRules rules;      // centring never adds a breach of these
     int keepTests = 3;     // edges this narrow keep their tries (0: none)
 };
@@ -72,8 +70,5 @@ struct WindowReport {
     bool complete = false;
 };
 
-// Window: the shifts that still finish, the next inputs re-timed as a player would. Edges are
-// measured in order, each then played mid-window (frame stepper). Bounds replayed to the goal.
 void findWindows(Engine& engine, const Plan& plan, const WindowOptions& options, WindowReport& out);
-
 } // namespace kpsim::search

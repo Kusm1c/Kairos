@@ -9,8 +9,26 @@
 #include <sstream>
 
 namespace kp {
-
 bool solverDriving() { return p1::g_started && !p1::g_sessionOver; }
+
+SolveStatus solveStatus() {
+    using namespace p1;
+    SolveStatus s;
+    s.solving = solverDriving() && g_cfg.dpSolve;
+    if (!s.solving) return s;
+    if (auto* pl = PlayLayer::get(); pl && pl->m_levelLength > 1.f)
+        s.level = std::clamp((double)g_hudVerifiedX / pl->m_levelLength, 0.0, 1.0);
+    if (const auto pr = dpbridge::progress(); pr.running && pr.horizon > pr.from)
+        s.search = std::clamp((double)(pr.tick - pr.from) / (double)(pr.horizon - pr.from), 0.0, 1.0);
+    s.iteration = g_hudIter;
+    s.phase = g_hudPhase;
+    s.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - solver::g_solveStart).count();
+    return s;
+}
+
+void stopSolve() {
+    if (!p1::g_sessionOver) p1::endSession("kairos_stop");   // ends with the game's onQuit
+}
 
 void saveModelWorld(int levelId, const std::filesystem::path& dir) {
     using namespace p1::dpsolve;
@@ -61,5 +79,4 @@ long long modelReplay(const std::filesystem::path& dir, const kpsim::macro::Plan
     }
     return dpbridge::outcome().replayDiedT;
 }
-
 } // namespace kp

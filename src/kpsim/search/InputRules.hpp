@@ -2,7 +2,6 @@
 #include "kpsim/macro/Macro.hpp"
 
 namespace kpsim::search {
-
 // What a human can play. All zero: anything goes ("Go crazy!").
 struct InputRules {
     macro::Tick minPress = 0;      // shortest hold
@@ -20,5 +19,4 @@ struct InputRules {
     }
     bool allows(const macro::Plan& p) const { return allows(p.holds) && allows(p.holds2); }
 };
-
 } // namespace kpsim::search

@@ -16,7 +16,6 @@ using kpsim::search::WindowReport;
 
 namespace kp {
 namespace {
-
 constexpr double kSearch = 60.0;        // ticks a click looks around for its note
 constexpr double kUnknownWindow = 3.0;  // judging window without measured frame windows
 constexpr int kFreeRelease = 6;         // a release with this much room both ways is not judged
@@ -77,9 +76,9 @@ RhythmOverlay* g_overlay = nullptr;
 
 class RhythmOverlay : public CCNode {
 public:
-    static RhythmOverlay* create(PlayLayer* layer, const Plan& plan, const WindowReport& w, bool demo) {
+    static RhythmOverlay* create(PlayLayer* layer, const Plan& plan, const WindowReport& w, bool demo, bool follow) {
         auto* o = new RhythmOverlay();
-        if (o->init(layer, plan, w, demo)) {
+        if (o->init(layer, plan, w, demo, follow)) {
             o->autorelease();
             return o;
         }
@@ -94,8 +93,6 @@ public:
 
     PlayLayer* layer() const { return m_layer; }
 
-    // Physics steps since the level start, as a macro counts them: a half step (Click Between
-    // Steps) is half a tick; nothing counts while dead. levelTime would drift with time warps.
     void onStep(bool half) {
         if (!m_layer->m_playerDied) m_clock += half ? 0.5 : 1.0;
     }
@@ -133,10 +130,11 @@ public:
     }
 
 private:
-    bool init(PlayLayer* layer, const Plan& plan, const WindowReport& w, bool demo) {
+    bool init(PlayLayer* layer, const Plan& plan, const WindowReport& w, bool demo, bool follow) {
         if (!CCNode::init()) return false;
         m_layer = layer;
         m_demo = demo;
+        m_follow = follow;
         m_pxPerTick = (float)Mod::get()->getSettingValue<int64_t>("rhythm-speed") / 240.f;
         buildNotes(plan, w);
         if (Mod::get()->getSettingValue<bool>("window-markers") && layer->m_objectLayer) {
@@ -144,8 +142,6 @@ private:
             layer->m_objectLayer->addChild(m_markerRoot, 1000);
         }
 
-        // A narrow column at the left edge, behind the player: notes fall to the hit line.
-        // Two players: P1 left lane, P2 right lane.
         const auto win = CCDirector::get()->getWinSize();
         m_lanes = plan.holds2.empty() ? 1 : 2;
         m_laneW = 20.f;
@@ -161,7 +157,9 @@ private:
         m_offset = label("chatFont.fnt", 0.45f, {m_trackX, 14.f});
         m_hud = label("chatFont.fnt", 0.45f, {m_trackX, m_trackY + m_trackH + 14.f});
         m_hint = label("chatFont.fnt", 0.45f, {m_trackX, m_trackY + m_trackH + 30.f});
-        setText(m_hint, m_known ? (demo ? "Demo: the macro plays itself" : "Click with the notes")
+        setText(m_hint, m_known ? (demo     ? "Demo: the macro plays itself"
+                                   : follow ? "The macro plays: click with the notes"
+                                            : "Click with the notes")
                                 : "No frame windows: judged on +-3 ticks");
         m_hint->setOpacity(170);
         m_hint->runAction(CCSequence::create(CCDelayTime::create(5.f), CCFadeOut::create(1.f), nullptr));
@@ -204,8 +202,6 @@ private:
                     n.early = e.early + (e.earlyLimited ? 0.5 : 0.0);
                     n.late = e.late + (e.lateLimited ? 0.5 : 0.0);
                 }
-                // A release with room both ways rarely matters, and without measured windows nothing
-                // says which do: drawn, not judged.
                 release.counts = h.release != kpsim::macro::kNever && release.known &&
                                  (release.early < kFreeRelease || release.late < kFreeRelease);
                 m_notes.push_back(press);
@@ -447,7 +443,12 @@ private:
     };
 
     PlayLayer* m_layer = nullptr;
-    bool m_demo = false, m_known = false, m_summaryShown = false;
+    bool m_demo = false, m_follow = false, m_known = false, m_summaryShown = false;
+
+public:
+    bool following() const { return m_follow; }
+
+private:
     std::vector<Note> m_notes;
     CCDrawNode* m_draw = nullptr;
     CCLabelBMFont *m_grade = nullptr, *m_offset = nullptr, *m_hud = nullptr, *m_hint = nullptr;
@@ -461,11 +462,10 @@ private:
     Ref<CCNode> m_markerRoot;   // in the level's object layer
     size_t m_nextMark = 0;
 };
-
 } // namespace
 
-void startRhythm(PlayLayer* layer, const Plan& plan, const WindowReport& windows, bool demo) {
-    if (auto* o = RhythmOverlay::create(layer, plan, windows, demo)) {
+void startRhythm(PlayLayer* layer, const Plan& plan, const WindowReport& windows, bool demo, bool follow) {
+    if (auto* o = RhythmOverlay::create(layer, plan, windows, demo, follow)) {
         g_overlay = o;
         layer->addChild(o, 10001);
     }
@@ -473,6 +473,9 @@ void startRhythm(PlayLayer* layer, const Plan& plan, const WindowReport& windows
 
 bool rhythmActive(GJBaseGameLayer* layer) { return g_overlay && static_cast<GJBaseGameLayer*>(g_overlay->layer()) == layer; }
 
+void rhythmFollowClick(GJBaseGameLayer* layer, int channel, bool down) {
+    if (rhythmActive(layer) && g_overlay->following()) g_overlay->onClick(channel, down);
+}
 } // namespace kp
 
 class $modify(KairosRhythmLayer, GJBaseGameLayer) {
@@ -485,7 +488,7 @@ class $modify(KairosRhythmLayer, GJBaseGameLayer) {
         GJBaseGameLayer::processCommands(dt, isHalfTick, isLastTick);
     }
     void handleButton(bool down, int button, bool isPlayer1) {
-        if (button == 1 && kp::rhythmActive(this)) {
+        if (button == 1 && kp::rhythmActive(this) && !kp::g_overlay->following()) {   // follow: Watch hands them over
             // handleButton swaps the buttons itself when "flip 2-player controls" is on.
             bool flip = !m_isPlatformer && GameManager::get()->getGameVariable("0010");
             bool two = m_levelSettings && m_levelSettings->m_twoPlayerMode;

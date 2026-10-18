@@ -16,7 +16,6 @@
 
 #include <Geode/modify/GJBaseGameLayer.hpp>
 #include <Geode/modify/PlayLayer.hpp>
-#include <Geode/ui/MDPopup.hpp>
 #include <Geode/ui/Popup.hpp>
 
 #include <chrono>
@@ -29,7 +28,6 @@ using kpsim::macro::Tick;
 using kpsim::search::Outcome;
 
 namespace kp {
-
 kpsim::search::InputRules humanRules() {
     kpsim::search::InputRules r;
     if (Mod::get()->getSettingValue<bool>("go-crazy")) return r;
@@ -68,7 +66,6 @@ std::string limitBreach(const kpsim::macro::Plan& plan) {
 }
 
 namespace {
-
 struct Pending {
     bool active = false;
     int levelId = 0;
@@ -97,6 +94,11 @@ struct Watch {
     bool flip = false;
     bool injecting = false;
     GJBaseGameLayer* layer = nullptr;
+    // Play it slow: from handFrom the player's own clicks, recorded into `played`.
+    bool hand = false, twoPlayers = false;
+    Tick handFrom = 0;
+    Plan played;
+    bool playedHeld[2] = {};
 } g_watch;
 
 bool twoPlayer(PlayLayer* pl) { return pl->m_levelSettings && pl->m_levelSettings->m_twoPlayerMode; }
@@ -117,8 +119,129 @@ void startWatch(PlayLayer* pl, Plan plan) {
     pl->resetLevel();
 }
 
-// Check: a narrow edge's tries, each fast-forwarded unseen to a second before the edge, then
-// played at normal speed with what it is and what the measure found.
+class DrawPad : public CCLayer {
+public:
+    using Line = std::vector<std::pair<float, float>>;
+    struct Drawing {
+        Line line;
+        std::vector<Line> walls;
+    };
+    static DrawPad* create(PlayLayer* layer, std::function<void(Drawing)> go, std::function<void()> cancel) {
+        auto* p = new DrawPad();
+        if (p->init(layer, std::move(go), std::move(cancel))) {
+            p->autorelease();
+            return p;
+        }
+        delete p;
+        return nullptr;
+    }
+
+    // The pad off and the level running again.
+    void close() {
+        CCTouchDispatcher::get()->removeDelegate(this);
+        CCDirector::get()->getScheduler()->setTimeScale(1.f);
+        if (m_ink) m_ink->removeFromParent();
+        m_ink = nullptr;
+        this->removeFromParent();
+    }
+
+private:
+    enum Button { kGo, kTool, kClear, kCancel };
+
+    bool init(PlayLayer* layer, std::function<void(Drawing)> go, std::function<void()> cancel) {
+        if (!CCLayer::init()) return false;
+        m_layer = layer;
+        m_go = std::move(go);
+        m_cancel = std::move(cancel);
+        const auto win = CCDirector::get()->getWinSize();
+        auto button = [&](const char* text, const char* bg, float x) {
+            auto* spr = ButtonSprite::create(text, "goldFont.fnt", bg, 0.8f);
+            spr->setScale(0.6f);
+            spr->setPosition({x, 26.f});
+            this->addChild(spr);
+            m_buttons.push_back(spr);
+            return spr;
+        };
+        button("Find route", "GJ_button_01.png", win.width / 2 + 165.f);
+        m_tool = button("Draw: line", "GJ_button_02.png", win.width / 2 + 55.f);
+        button("Clear", "GJ_button_04.png", win.width / 2 - 55.f);
+        button("Cancel", "GJ_button_06.png", win.width / 2 - 165.f);
+        m_ink = CCDrawNode::create();
+        layer->m_objectLayer->addChild(m_ink, 1000);
+        CCDirector::get()->getScheduler()->setTimeScale(0.f);   // the level frozen while drawing
+        CCTouchDispatcher::get()->addTargetedDelegate(this, -600, true);
+        return true;
+    }
+
+    int hit(CCPoint at) const {
+        for (size_t i = 0; i < m_buttons.size(); ++i)
+            if (m_buttons[i]->boundingBox().containsPoint(at)) return (int)i;
+        return -1;
+    }
+
+    // The line goes on from where it stopped; each wall is its own stroke.
+    void add(CCTouch* t, bool stroke) {
+        if (m_walling && stroke) m_drawing.walls.emplace_back();
+        Line& l = m_walling ? m_drawing.walls.back() : m_drawing.line;
+        const CCPoint w = m_layer->m_objectLayer->convertToNodeSpace(t->getLocation());
+        if (!l.empty()) {
+            const CCPoint last{l.back().first, l.back().second};
+            if (ccpDistance(last, w) < 4.f) return;
+            m_ink->drawSegment(last, w, 2.5f, m_walling ? ccc4f(1.f, 0.3f, 0.25f, 0.95f) : ccc4f(0.3f, 1.f, 1.f, 0.9f));
+        }
+        l.push_back({w.x, w.y});
+    }
+
+    bool drawn() const {
+        if (m_drawing.line.size() >= 2) return true;
+        for (const auto& w : m_drawing.walls)
+            if (w.size() >= 2) return true;
+        return false;
+    }
+
+    bool ccTouchBegan(CCTouch* t, CCEvent*) override {
+        m_pressed = hit(t->getLocation());
+        if (m_pressed < 0) add(t, true);
+        return true;
+    }
+    void ccTouchMoved(CCTouch* t, CCEvent*) override {
+        if (m_pressed < 0) add(t, false);
+    }
+    void ccTouchEnded(CCTouch* t, CCEvent*) override {
+        const int b = m_pressed;
+        m_pressed = -1;
+        if (b < 0 || hit(t->getLocation()) != b) return;
+        if (b == kTool) {
+            m_walling = !m_walling;
+            m_tool->setString(m_walling ? "Draw: wall" : "Draw: line");
+            return;
+        }
+        if (b == kClear) {
+            m_drawing = {};
+            m_ink->clear();
+            return;
+        }
+        if (b == kGo && !drawn()) return;
+        Ref<DrawPad> keep = this;
+        auto go = m_go;
+        auto cancel = m_cancel;
+        Drawing drawing = m_drawing;
+        close();
+        if (b == kGo) go(std::move(drawing));
+        else cancel();
+    }
+
+    PlayLayer* m_layer = nullptr;
+    std::function<void(Drawing)> m_go;
+    std::function<void()> m_cancel;
+    std::vector<CCNode*> m_buttons;   // as Button
+    ButtonSprite* m_tool = nullptr;
+    CCDrawNode* m_ink = nullptr;
+    Drawing m_drawing;
+    bool m_walling = false;
+    int m_pressed = -1;
+};
+
 class CheckViewer;
 CheckViewer* g_check = nullptr;
 
@@ -136,8 +259,15 @@ public:
 
     // Leaves the level as it was (attempts, buttons).
     void stop() {
+        if (m_pad) m_pad->close();
+        m_pad = nullptr;
+        CCDirector::get()->getScheduler()->setTimeScale(1.f);
+        this->unscheduleUpdate();
+        m_state = State::Done;
         if (m_ui) m_ui->removeFromParent();
         m_ui = nullptr;
+        m_title = m_label = nullptr;   // went with m_ui
+        m_menu = m_handMenu = nullptr;
         m_layer->m_level->m_attempts = m_savedAttempts;
         m_layer->m_level->m_jumps = m_savedJumps;
         g_watch = Watch{};
@@ -146,7 +276,7 @@ public:
     }
 
 private:
-    enum class State { Starting, Playing, Pausing, Done };
+    enum class State { Starting, Playing, Pausing, Done, ToDraw, Drawing, Hand, HandDied };
 
     bool init(PlayLayer* layer, kpsim::search::EdgeTests tests) {
         if (!CCNode::init()) return false;
@@ -212,6 +342,7 @@ private:
         auto* menu = CCMenu::create();
         menu->setPosition({0.f, 0.f});
         m_ui->addChild(menu);
+        m_menu = menu;
         auto button = [&](const char* frame, SEL_MenuHandler sel, CCPoint at, bool flip) {
             auto* spr = CCSprite::createWithSpriteFrameName(frame);
             spr->setFlipX(flip);
@@ -223,6 +354,123 @@ private:
         button("GJ_arrow_03_001.png", menu_selector(CheckViewer::onPrev), {26.f, win.height / 2}, false);
         button("GJ_arrow_03_001.png", menu_selector(CheckViewer::onNext), {win.width - 26.f, win.height / 2}, true);
         button("GJ_replayBtn_001.png", menu_selector(CheckViewer::onAgain), {win.width - 26.f, win.height - 26.f}, false);
+        // A route drawn by hand; and at 1 to 3 ticks, the inputs around it may take a wider path.
+        const auto& w = m_tests.edge;
+        const bool tight = w.early + w.late + 1 <= 3;
+        auto wide = [&](const char* text, SEL_MenuHandler sel, float x) {
+            auto* spr = ButtonSprite::create(text, "goldFont.fnt", "GJ_button_01.png", 0.8f);
+            spr->setScale(0.7f);
+            auto* b = CCMenuItemSpriteExtra::create(spr, this, sel);
+            b->setPosition({x, 28.f});
+            menu->addChild(b);
+        };
+        const float gap = tight ? 165.f : 90.f;
+        wide("Draw a route", menu_selector(CheckViewer::onDraw), win.width / 2 - gap);
+        wide("Play it slow", menu_selector(CheckViewer::onPlaySlow), tight ? win.width / 2 : win.width / 2 + gap);
+        if (tight) wide("Find better route", menu_selector(CheckViewer::onBetter), win.width / 2 + gap);
+        // Play it slow: its own buttons.
+        m_handMenu = CCMenu::create();
+        m_handMenu->setPosition({0.f, 0.f});
+        m_handMenu->setVisible(false);
+        m_ui->addChild(m_handMenu);
+        auto hand = [&](const char* text, const char* bg, SEL_MenuHandler sel, float x) {
+            auto* spr = ButtonSprite::create(text, "goldFont.fnt", bg, 0.8f);
+            spr->setScale(0.7f);
+            auto* b = CCMenuItemSpriteExtra::create(spr, this, sel);
+            b->setPosition({x, 28.f});
+            m_handMenu->addChild(b);
+        };
+        hand("Cancel", "GJ_button_06.png", menu_selector(CheckViewer::onHandCancel), win.width / 2 - 150.f);
+        hand("Again", "GJ_button_04.png", menu_selector(CheckViewer::onPlaySlow), win.width / 2);
+        hand("Use my run", "GJ_button_01.png", menu_selector(CheckViewer::onUseRun), win.width / 2 + 150.f);
+    }
+
+    void onPlaySlow(CCObject*) {
+        if (m_state == State::Starting || m_state == State::ToDraw || m_state == State::Drawing) return;
+        CCDirector::get()->getScheduler()->setTimeScale(1.f);
+        play(0);
+        if (m_state != State::Playing) return;
+        const Plan& plan = m_tests.tests.front().plan;
+        const Tick edge = m_tests.edge.tick;
+        Tick from = edge > 30 ? edge - 30 : 1;
+        while (from > m_from + 1 && plan.anyHeldAt(from)) --from;
+        while (plan.anyHeldAt(from) && from < edge + 240) ++from;   // held all along: after its release
+        g_watch.hand = true;
+        g_watch.twoPlayers = twoPlayer(m_layer);
+        g_watch.handFrom = from;
+        g_watch.played = plan;
+        for (kpsim::macro::Holds* h : {&g_watch.played.holds, &g_watch.played.holds2})
+            while (!h->empty() && h->back().press >= from) h->pop_back();
+        g_watch.playedHeld[0] = g_watch.playedHeld[1] = false;
+        m_stopAt = std::max(edge, from) + 600;
+        if (m_menu) m_menu->setVisible(false);
+        if (m_handMenu) m_handMenu->setVisible(true);
+        setText("Your turn, at 25 % speed",
+                fmt::format("From {:.2f} s, play it yourself; Use my run once through", from / 240.0), {120, 255, 160});
+        CCDirector::get()->getScheduler()->setTimeScale(0.25f);
+        m_state = State::Hand;
+    }
+
+    void onHandCancel(CCObject*) {
+        if (m_state != State::Hand && m_state != State::HandDied) return;
+        CCDirector::get()->getScheduler()->setTimeScale(1.f);
+        if (m_handMenu) m_handMenu->setVisible(false);
+        if (m_menu) m_menu->setVisible(true);
+        play(0);
+    }
+
+    void onUseRun(CCObject*) {
+        if (m_state != State::Hand) return;   // alive only
+        if (g_watch.tick <= g_watch.handFrom) return;
+        Plan played = g_watch.played;
+        for (kpsim::macro::Holds* h : {&played.holds, &played.holds2})
+            if (!h->empty() && h->back().release == kpsim::macro::kNever) h->back().release = g_watch.tick + 1;
+        const Tick until = g_watch.tick;
+        auto tests = m_tests;
+        Ref<GJGameLevel> level = m_layer->m_level;
+        stop();
+        startPlayed(level, tests, std::move(played), until);
+    }
+
+    // The level shown a moment before the edge, then frozen for the drawing.
+    void onDraw(CCObject*) {
+        if (m_state == State::Starting || m_state == State::ToDraw || m_state == State::Drawing) return;
+        play(0);
+        if (m_state != State::Playing) return;
+        if (m_menu) m_menu->setVisible(false);
+        setText("Draw a route", "A line where the player should go (a rough guide), walls where it must not",
+                {120, 220, 255});
+        m_state = State::ToDraw;
+        m_pause = 0.35f;
+    }
+
+    void startDrawing() {
+        auto* scene = m_layer->getParent();
+        Ref<CheckViewer> self = this;
+        m_pad = DrawPad::create(
+            m_layer,
+            [self](DrawPad::Drawing d) {
+                self->m_pad = nullptr;
+                auto tests = self->m_tests;
+                Ref<GJGameLevel> level = self->m_layer->m_level;
+                self->stop();
+                startGuide(level, tests, std::move(d.line), std::move(d.walls));
+            },
+            [self] {
+                self->m_pad = nullptr;
+                if (self->m_menu) self->m_menu->setVisible(true);
+                self->play(0);
+            });
+        if (!m_pad || !scene) return;
+        scene->addChild(m_pad, (1 << 21) + 1);
+        m_state = State::Drawing;
+    }
+
+    void onBetter(CCObject*) {
+        auto tests = m_tests;
+        Ref<GJGameLevel> level = m_layer->m_level;
+        stop();
+        startReroute(level, tests);
     }
 
     void setText(const std::string& title, const std::string& detail, ccColor3B c) {
@@ -301,6 +549,16 @@ private:
             }
         } else if (m_state == State::Pausing) {
             if ((m_pause -= dt) <= 0.f) next(m_index + 1);
+        } else if (m_state == State::ToDraw) {
+            if ((m_pause -= dt) <= 0.f) startDrawing();
+        } else if (m_state == State::Hand) {
+            if (m_layer->m_playerDied) {
+                CCDirector::get()->getScheduler()->setTimeScale(1.f);
+                m_state = State::HandDied;
+                setText("You died", "Again, or Cancel", {255, 120, 100});
+            } else if (g_watch.tick >= m_stopAt) {
+                onUseRun(nullptr);   // far enough past the edge
+            }
         }
     }
 
@@ -311,6 +569,9 @@ private:
     Tick m_from = 1, m_stopAt = 0;
     float m_pause = 0;
     CCNode* m_ui = nullptr;
+    CCMenu* m_menu = nullptr;
+    CCMenu* m_handMenu = nullptr;
+    DrawPad* m_pad = nullptr;
     CCLabelBMFont *m_title = nullptr, *m_label = nullptr;
     int m_savedAttempts = 0, m_savedJumps = 0;
 };
@@ -427,6 +688,8 @@ private:
         switch (m_request.kind) {
             case JobKind::FindPath: return "Find path";
             case JobKind::Optimize: return "Optimize";
+            case JobKind::Reroute: return "Find better route";
+            case JobKind::Guide: return "Route along your line";
             case JobKind::Windows: return "Frame windows";
             default: return "Kairos";
         }
@@ -478,18 +741,35 @@ private:
             o.maxShift = (int)Mod::get()->getSettingValue<int64_t>("window-cap");
             o.rules = humanRules();
             kpsim::search::optimizePlan(*m_engine, m_request.plan, o, m_opt);
+        } else if (m_request.kind == JobKind::Guide) {
+            kpsim::search::GuideOptions o;
+            o.points = m_request.guide;
+            o.walls = m_request.guideWalls;
+            if (m_request.playedUntil) {
+                o.played = &m_request.played;
+                o.playedUntil = m_request.playedUntil;
+            }
+            o.player = m_request.check.edge.player;
+            o.drawnAt = m_request.check.edge.tick;
+            o.rules = humanRules();
+            kpsim::search::followGuide(*m_engine, m_request.plan, o, m_guide);
+        } else if (m_request.kind == JobKind::Reroute) {
+            const auto& w = m_request.check.edge;
+            kpsim::search::OptimizeOptions o;
+            o.maxShift = (int)Mod::get()->getSettingValue<int64_t>("window-cap");
+            o.rules = humanRules();
+            o.only = {w.player, w.tick, w.press};
+            kpsim::search::optimizePlan(*m_engine, m_request.plan, o, m_opt);
         } else {
             kpsim::search::WindowOptions o;
             o.maxShift = (int)Mod::get()->getSettingValue<int64_t>("window-cap");
             o.strict = Mod::get()->getSettingValue<bool>("windows-strict");
-            o.holds = m_request.firstClicks;
-            if (o.holds) o.removals = false;
             o.rules = humanRules();
             // Feasibility of model-guided windows: does the solver's model replay this plan?
             double secs = 0;
             std::string err;
-            const long long died = m_request.firstClicks ? -3 : modelReplay(modelDir(m_layer->m_level), m_request.plan, secs, err);
-            if (died != -3) log::info("[kp] model replay: {} ({:.1f}s)",
+            const long long died = modelReplay(modelDir(m_layer->m_level), m_request.plan, secs, err);
+            log::info("[kp] model replay: {} ({:.1f}s)",
                       died == -2 ? err : died < 0 ? std::string("survived") : fmt::format("died at step {}", died), secs);
             kpsim::search::findWindows(*m_engine, m_request.plan, o, m_windows);
         }
@@ -564,12 +844,26 @@ private:
     void logSummary(const EngineStats& st, double elapsed, bool cancelled, const std::string& error) {
         GJGameLevel* level = m_layer->m_level;
         const auto fp = kpsim::search::windowStats(m_windows, 1.0);
-        std::string what = m_request.kind == JobKind::Optimize
+        const auto& edge = m_request.check.edge;
+        std::string what = m_request.kind == JobKind::Guide
+                               ? fmt::format("guide found={} verified={} differs {}-{} clicks {}->{} trials={}{}",
+                                             m_guide.found, m_guide.verified, m_guide.from, m_guide.to,
+                                             m_request.plan.presses(), m_guide.plan.presses(), m_guide.trials,
+                                             m_guide.error.empty() ? "" : " (" + m_guide.error + ")") +
+                                     (m_guide.log.empty() ? "" : "; " + m_guide.log)
+                           : m_request.kind == JobKind::Reroute
+                               ? fmt::format("better route {}#{} {} at {} found={} verified={} window {}->{} "
+                                             "mean {:.2f}->{:.2f} clicks {}->{} routes={} trials={}",
+                                             edge.player ? "P2 " : "", edge.hold + 1, edge.press ? "press" : "release",
+                                             edge.tick, m_opt.rebatched, m_opt.verified, m_opt.targetBefore,
+                                             m_opt.targetAfter, m_opt.batchMean[0], m_opt.batchMean[1],
+                                             m_request.plan.presses(), m_opt.plan.presses(), m_opt.routesTried, m_opt.trials)
+                           : m_request.kind == JobKind::Optimize
                                ? fmt::format("optimize finished={} verified={} clicks {}->{} inputs {}->{} removed={} "
-                                             "merged={} centered={} widened={} rejected={} narrowest {}->{} trials={}",
+                                             "merged={} centered={} rejected={} narrowest {}->{} trials={}",
                                              m_opt.finishedBefore, m_opt.verified, m_opt.clicksBefore,
                                              m_opt.plan.presses(), m_opt.inputsBefore, m_opt.plan.inputs(),
-                                             m_opt.removed, m_opt.merged, m_opt.centered, m_opt.widened, m_opt.rejected,
+                                             m_opt.removed, m_opt.merged, m_opt.centered, m_opt.rejected,
                                              m_opt.narrowestBefore, m_opt.narrowestAfter, m_opt.trials)
                            : m_request.kind == JobKind::FindPath
                                ? fmt::format("path solved={} furthest={} clicks={} trials={} cut={} backtracks={}",
@@ -601,12 +895,81 @@ private:
                   st.updates, st.saveMs / 1000.0,
                   std::max(0.0, m_workMs - st.restoreMs - st.updateMs - st.saveMs) / 1000.0,
                   std::max(0.0, elapsed - m_workMs / 1000.0));
-        if (!m_opt.widenLog.empty()) log::info("[kp] widen:{}", m_opt.widenLog);
         log::info("[kp] checkpoint load: effects {:.1f}s, moves {:.1f}s, players {:.1f}s ({} audio restores "
                   "skipped), rest {:.1f}s; {:.0f} saved objects a load",
                   st.effectsMs / 1000.0, st.movesMs / 1000.0, st.playersMs / 1000.0, st.audioSkips,
                   std::max(0.0, st.loadMs - st.effectsMs - st.movesMs - st.playersMs) / 1000.0,
                   st.loads ? (double)st.savedObjects / st.loads : 0.0);
+    }
+
+    void reportGuide(bool cancelled, const std::string& note) {
+        const char* title = m_request.playedUntil ? "Your run" : "Route along your line";
+        if (!m_guide.verified) {
+            FLAlertLayer::create(title,
+                                 fmt::format("{}{} ({} tries).{}", cancelled ? "<cy>Stopped.</c> " : "",
+                                             m_guide.error.empty() ? "No route along the line was found" : m_guide.error,
+                                             m_guide.trials, note),
+                                 "OK")->show();
+            return;
+        }
+        GJGameLevel* level = m_layer->m_level;
+        std::string saved;
+        if (m_request.ofSolution) {
+            saved = "\nSaved as the solution to " + saveSolution(level, m_guide.plan).string() + ".";
+        } else {   // a macro: the new one beside the solutions
+            auto path = outputDir() / "solutions" / (fileStem(level) + "-guided.gdr2");
+            kpsim::macro::writeFile(path, kpsim::macro::writeGdr2(m_guide.plan, (uint32_t)level->m_levelID,
+                                                                   std::string(level->m_levelName)));
+            saved = "\nSaved to " + path.string() + ".";
+        }
+        saved += " Run <cy>Windows</c> again for its windows.";
+        Plan plan = m_guide.plan;
+        PlayLayer* layer = m_layer;
+        const size_t walls = m_request.guideWalls.size();
+        std::string drawn = m_request.playedUntil ? "your run joined back to the macro"
+                            : m_request.guide.size() >= 2 ? "along your line" : "";
+        if (walls) drawn += fmt::format("{}off your {} wall{}", drawn.empty() ? "" : ", ", walls, walls > 1 ? "s" : "");
+        createQuickPopup(title,
+                         fmt::format("<cg>Verified</c> from the start, {}: the macro changed from {:.2f} s to {:.2f} s, "
+                                     "{} -> {} clicks.{}{}",
+                                     drawn, m_guide.from / 240.0, m_guide.to / 240.0, m_request.plan.presses(),
+                                     m_guide.plan.presses(), saved, note),
+                         "OK", "Watch", [plan, layer](FLAlertLayer*, bool watch) { if (watch) startWatch(layer, plan); });
+    }
+
+    void reportReroute(bool cancelled, const std::string& note) {
+        GJGameLevel* level = m_layer->m_level;
+        const auto& w = m_request.check.edge;
+        const std::string name = fmt::format("{}#{} {} at {:.2f} s", w.player ? "P2 " : "", w.hold + 1,
+                                             w.press ? "press" : "release", w.tick / 240.0);
+        if (!m_opt.finishedBefore || m_opt.targetBefore < 0) {
+            FLAlertLayer::create("Kairos", "This plan no longer has " + name + " as measured. Run <cy>Windows</c> again." + note,
+                                 "OK")->show();
+            return;
+        }
+        if (!m_opt.rebatched || !m_opt.verified) {
+            FLAlertLayer::create("Find better route",
+                                 fmt::format("{}No route gives {} more room, re-timing the {} inputs before it or "
+                                             "adding a click ({} versions compared). Its window stays {} ticks.{}",
+                                             cancelled ? "<cy>Stopped.</c> " : "", name,
+                                             kpsim::search::OptimizeOptions{}.batch, m_opt.routesTried,
+                                             m_opt.targetBefore, note),
+                                 "OK")->show();
+            return;
+        }
+        std::string saved = "\n<cy>A macro's route: not saved as the solution.</c>";
+        if (m_request.ofSolution) saved = "\nSaved as the solution to " + saveSolution(level, m_opt.plan).string() +
+                                          ". Run <cy>Windows</c> again for all the windows.";
+        Plan plan = m_opt.plan;
+        PlayLayer* layer = m_layer;
+        const int added = (int)m_opt.plan.presses() - (int)m_request.plan.presses();
+        createQuickPopup("Better route",
+                         fmt::format("<cg>Verified</c> from the start: {} now has {} ticks instead of {}, the inputs "
+                                     "around it re-timed{} (mean window {:.1f} -> {:.1f} ticks).{}{}",
+                                     name, m_opt.targetAfter, m_opt.targetBefore,
+                                     added > 0 ? fmt::format(" and {} click{} added", added, added > 1 ? "s" : "") : "",
+                                     m_opt.batchMean[0], m_opt.batchMean[1], saved, note),
+                         "OK", "Watch", [plan, layer](FLAlertLayer*, bool watch) { if (watch) startWatch(layer, plan); });
     }
 
     void report(bool cancelled, const std::string& error, const EngineStats& st, double elapsed) {
@@ -622,6 +985,14 @@ private:
             note += "\n<cr>The path only works with several physics steps per frame.</c>";
         if (!error.empty()) {
             FLAlertLayer::create("Kairos", "<cr>Stopped:</c> " + error, "OK")->show();
+            return;
+        }
+        if (m_request.kind == JobKind::Reroute) {
+            reportReroute(cancelled, note);
+            return;
+        }
+        if (m_request.kind == JobKind::Guide) {
+            reportGuide(cancelled, note);
             return;
         }
         if (m_request.kind == JobKind::Optimize) {
@@ -660,12 +1031,10 @@ private:
                                                              m_opt.violations, breach);
             createQuickPopup("Optimized",
                              fmt::format("<cg>Verified</c>: {} -> {} clicks, {} -> {} inputs ({} removed, {} merged, "
-                                         "{} made human).\nNarrowest window: {} -> {} ({} timings centered, {} tight ones "
-                                         "given room by a zigzag).\nSaved to {}{}{}",
+                                         "{} made human).\nNarrowest window: {} -> {} ({} timings centered).\nSaved to {}{}{}",
                                          m_opt.clicksBefore, m_opt.plan.presses(), m_opt.inputsBefore,
                                          m_opt.plan.inputs(), m_opt.removed, m_opt.merged, m_opt.humanized,
                                          ticks(m_opt.narrowestBefore), ticks(m_opt.narrowestAfter), m_opt.centered,
-                                         m_opt.widened,
                                          path.string(), human, note),
                              "OK", "Watch", [plan, layer](FLAlertLayer*, bool watch) { if (watch) startWatch(layer, plan); });
             return;
@@ -690,37 +1059,6 @@ private:
                                                  m_path.trials, path.string(), note),
                                      "OK")->show();
             }
-        } else if (m_request.firstClicks) {
-            // Each click in order, to compare with a frame stepper by hand.
-            std::string text = fmt::format("Windows in 240 Hz ticks, the macro's clicks in order{}.\n\n",
-                                           m_windows.complete ? "" : " (stopped)");
-            for (size_t h = 0; h < m_request.firstClicks; ++h) {
-                const kpsim::search::EdgeWindow *press = nullptr, *release = nullptr;
-                for (const auto& w : m_windows.edges)
-                    if (w.player == 0 && w.hold == h) (w.press ? press : release) = &w;
-                if (!press) continue;
-                auto side = [&](const kpsim::search::EdgeWindow& w) {
-                    return fmt::format("**{}** (-{}{} / +{}{})", w.early + w.late + 1, w.early,
-                                       w.earlyLimited ? "+" : "", w.late, w.lateLimited ? "+" : "");
-                };
-                text += fmt::format("{}. **{:.2f} s** - press {}{}{}\n\n", h + 1, press->tick / 240.0, side(*press),
-                                    press->ground == 0 ? " *in the air (buffered)*"
-                                    : press->movedBy ? fmt::format(" *moved {:+} ticks to a wider window*", press->movedBy)
-                                                     : std::string(),
-                                    release ? "   release " + side(*release) : std::string());
-            }
-            if (!Mod::get()->getSettingValue<bool>("window-markers"))
-                text += "\nTurn on *Frame window markers* in the settings to see them by each click in Watch.\n";
-            text += fmt::format("\n{} trials, {}", m_windows.trials, note);
-            // Watch: the clicks replayed with their windows by them (setting "window-markers").
-            Plan plan = m_windows.plan.presses() ? m_windows.plan : m_request.plan;
-            auto windows = m_windows;
-            PlayLayer* layer = m_layer;
-            geode::MDPopup::create("First clicks", text, "OK", "Watch", [plan, windows, layer](bool watch) {
-                if (!watch) return;
-                startWatch(layer, plan);
-                startRhythm(layer, plan, windows, true);
-            })->show();
         } else {
             auto path = reportPath(level);
             std::string text = windowsReport(level, m_request, m_windows);
@@ -773,6 +1111,7 @@ private:
     std::unique_ptr<FiberTask> m_task;
     kpsim::search::PathResult m_path;
     kpsim::search::OptimizeResult m_opt;
+    kpsim::search::GuideResult m_guide;
     kpsim::search::WindowReport m_windows;
     std::chrono::steady_clock::time_point m_started;
     double m_limitMinutes = 0, m_workMs = 0;
@@ -782,7 +1121,6 @@ private:
 };
 
 JobRunner* g_runner = nullptr;
-
 } // namespace
 
 bool watchActive() { return g_watch.on; }
@@ -808,10 +1146,61 @@ std::filesystem::path modelDir(GJGameLevel* level) { return outputDir() / "model
 std::filesystem::path statsPath(GJGameLevel* level) { return outputDir() / "windows" / (fileStem(level) + ".kw"); }
 std::filesystem::path reportPath(GJGameLevel* level) { return outputDir() / "windows" / (fileStem(level) + ".txt"); }
 
+bool checksSolution(GJGameLevel* level, const Plan& plan) {
+    if (isSolutionPlan(level, plan)) return true;
+    std::ifstream in(statsPath(level));
+    if (!in) return false;
+    std::stringstream ss;
+    ss << in.rdbuf();
+    kpsim::search::WindowReport r;
+    std::string macro;
+    uint64_t measured = 0;
+    if (!kpsim::search::readWindowFile(ss.str(), r, macro, measured)) return false;
+    return macro == solutionPath(level).filename().string() || macro == solverSolutionPath(level).filename().string();
+}
+
 void startCheck(GJGameLevel* level, const kpsim::search::EdgeTests& tests) {
     JobRequest req;
     req.kind = JobKind::Check;
     req.check = tests;
+    startJob(level, std::move(req));
+}
+
+void startReroute(GJGameLevel* level, const kpsim::search::EdgeTests& tests) {
+    if (tests.tests.empty()) return;
+    JobRequest req;
+    req.kind = JobKind::Reroute;
+    req.check = tests;
+    req.check.tests.resize(1);
+    req.plan = req.merged = tests.tests.front().plan;
+    req.ofSolution = checksSolution(level, req.plan);
+    startJob(level, std::move(req));
+}
+
+void startGuide(GJGameLevel* level, const kpsim::search::EdgeTests& tests, std::vector<std::pair<float, float>> line,
+                std::vector<std::vector<std::pair<float, float>>> walls) {
+    if (tests.tests.empty()) return;
+    JobRequest req;
+    req.kind = JobKind::Guide;
+    req.check = tests;
+    req.check.tests.resize(1);
+    req.plan = req.merged = tests.tests.front().plan;
+    req.ofSolution = checksSolution(level, req.plan);
+    req.guide = std::move(line);
+    req.guideWalls = std::move(walls);
+    startJob(level, std::move(req));
+}
+
+void startPlayed(GJGameLevel* level, const kpsim::search::EdgeTests& tests, Plan played, Tick until) {
+    if (tests.tests.empty()) return;
+    JobRequest req;
+    req.kind = JobKind::Guide;
+    req.check = tests;
+    req.check.tests.resize(1);
+    req.plan = req.merged = tests.tests.front().plan;
+    req.ofSolution = checksSolution(level, req.plan);
+    req.played = std::move(played);
+    req.playedUntil = until;
     startJob(level, std::move(req));
 }
 
@@ -823,7 +1212,6 @@ void startJob(GJGameLevel* level, JobRequest request) {
     auto* scene = PlayLayer::scene(level, false, false);
     CCDirector::get()->replaceScene(CCTransitionFade::create(0.5f, scene));
 }
-
 } // namespace kp
 
 using namespace kp;
@@ -848,7 +1236,9 @@ class $modify(KpJobPlayLayer, PlayLayer) {
                 startWatch(this, plan);
                 startRhythm(this, plan, g_pending.request.windows, true);
             } else if (g_pending.request.kind == JobKind::Rhythm) {
-                startRhythm(this, planFor(this, g_pending.request), g_pending.request.windows, false);
+                Plan plan = planFor(this, g_pending.request);
+                if (g_pending.request.follow) startWatch(this, plan);
+                startRhythm(this, plan, g_pending.request.windows, false, g_pending.request.follow);
             } else if (auto* r = JobRunner::create(this, std::move(g_pending.request))) {
                 g_runner = r;
                 this->addChild(r, 10000);
@@ -880,7 +1270,7 @@ class $modify(KpWatchLayer, GJBaseGameLayer) {
     void processCommands(float dt, bool isHalfTick, bool isLastTick) {
         if (g_watch.on && this == g_watch.layer && !GameEngine::active()) {
             ++g_watch.tick;
-            for (int p = 0; p < 2; ++p) {
+            for (int p = 0; p < 2 && !(g_watch.hand && g_watch.tick >= g_watch.handFrom); ++p) {
                 bool want = g_watch.plan.heldAt(g_watch.tick, p);
                 if (want == g_watch.held[p]) continue;
                 g_watch.injecting = true;
@@ -892,7 +1282,27 @@ class $modify(KpWatchLayer, GJBaseGameLayer) {
         GJBaseGameLayer::processCommands(dt, isHalfTick, isLastTick);
     }
     void handleButton(bool down, int button, bool isPlayer1) {
-        if (g_watch.on && this == g_watch.layer && !g_watch.injecting) return;
+        if (g_watch.on && this == g_watch.layer && !g_watch.injecting) {
+            if (!g_watch.hand || g_watch.tick < g_watch.handFrom) {
+                // Kept from the game; Rhythm in follow mode judges it.
+                if (button == 1) {
+                    const bool two = m_levelSettings && m_levelSettings->m_twoPlayerMode;
+                    kp::rhythmFollowClick(this, two && isPlayer1 == g_watch.flip ? 1 : 0, down);
+                }
+                return;
+            }
+            // Played by hand: each click at the step it lands on.
+            const int p = g_watch.twoPlayers && isPlayer1 == g_watch.flip ? 1 : 0;
+            kpsim::macro::Holds& h = g_watch.played.channel(p);
+            const kpsim::macro::Tick t = g_watch.tick;
+            if (down && !g_watch.playedHeld[p]) {
+                h.push_back({std::max<kpsim::macro::Tick>(t, h.empty() ? 1 : h.back().release + 1), kpsim::macro::kNever});
+                g_watch.playedHeld[p] = true;
+            } else if (!down && g_watch.playedHeld[p]) {
+                h.back().release = std::max<kpsim::macro::Tick>(t, h.back().press + 1);
+                g_watch.playedHeld[p] = false;
+            }
+        }
         GJBaseGameLayer::handleButton(down, button, isPlayer1);
     }
 };

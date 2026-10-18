@@ -11,7 +11,6 @@ using namespace geode::prelude;
 using levelwarn::Note;
 
 namespace kp {
-
 ccColor3B severityColor(levelwarn::Severity s) {
     switch (s) {
         case levelwarn::Severity::Bad: return {255, 100, 100};
@@ -22,7 +21,6 @@ ccColor3B severityColor(levelwarn::Severity s) {
 }
 
 namespace {
-
 class LevelCheckPopup : public geode::Popup {
 public:
     static LevelCheckPopup* create(const std::string& level, std::vector<Note> notes) {
@@ -104,11 +102,9 @@ private:
         return true;
     }
 };
-
 } // namespace
 
 void showLevelCheck(const std::string& levelName, std::vector<Note> notes) {
     if (auto* p = LevelCheckPopup::create(levelName, std::move(notes))) p->show();
 }
-
 } // namespace kp

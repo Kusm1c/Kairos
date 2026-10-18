@@ -5,24 +5,17 @@
 #include <vector>
 
 namespace kpsim::search {
-
-// Snapshots taken along one plan, so a run can restart close to a change.
-// A snapshot is checked once against the plan's own trace before its first use.
 class Timeline {
 public:
     Timeline(Engine& engine, Tick spacing) : m_engine(engine), m_spacing(spacing) {}
     ~Timeline() { clear(); }
 
-    // Runs `plan` from the engine's tick to `until`, snapshotting on the way.
-    // `plan` must match the previous one up to the engine's tick. Traces: Trace::nearRecord, looseRecord.
     RunResult advance(const Plan& plan, Tick until, std::vector<uint64_t>* nearTrace = nullptr,
                       std::vector<uint64_t>* looseTrace = nullptr);
     // Engine at the latest usable snapshot <= t (else level start). Returns its tick.
     Tick seek(Tick t);
     // Plan changed after t: later snapshots are invalid.
     void truncate(Tick t);
-    // `plan` replaces the current plan and rejoins its run at `to`: the trace over
-    // [from, to) becomes `rec`, snapshots in between go, the rest stays.
     void splice(const Plan& plan, Tick from, Tick to, const std::vector<uint64_t>& rec);
     void clear();
     // An extra snapshot at t on the current plan, until unpinned (0: none taken).
@@ -55,5 +48,4 @@ private:
 Tick firstDifference(const Plan& a, const Plan& b);
 // Last tick where the two plans differ (0 if equal).
 Tick lastDifference(const Plan& a, const Plan& b);
-
 } // namespace kpsim::search

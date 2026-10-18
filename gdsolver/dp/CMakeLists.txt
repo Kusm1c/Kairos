@@ -1,0 +1,16 @@
+add_library(gdsolver_dp INTERFACE)
+target_include_directories(gdsolver_dp INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_compile_features(gdsolver_dp INTERFACE cxx_std_17)
+
+function(gdsolver_dp_options target)
+    if (MSVC)
+        target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8 $<$<CONFIG:RelWithDebInfo>:/Ob2>)
+    else()
+        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -O2)
+    endif()
+endfunction()
+
+add_library(gdsolver_dpcore STATIC src/dpcore.cpp)
+target_link_libraries(gdsolver_dpcore PUBLIC gdsolver_dp)
+set_target_properties(gdsolver_dpcore PROPERTIES POSITION_INDEPENDENT_CODE ON)
+gdsolver_dp_options(gdsolver_dpcore)

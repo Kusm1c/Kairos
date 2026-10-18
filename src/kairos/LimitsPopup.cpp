@@ -9,7 +9,6 @@ using namespace geode::prelude;
 
 namespace kp {
 namespace {
-
 class LimitsPopup : public geode::Popup {
 public:
     static LimitsPopup* create(const std::string& level, const std::string& why) {
@@ -63,11 +62,9 @@ private:
         openSettingsPopup(Mod::get());
     }
 };
-
 } // namespace
 
 void showLimitsPopup(const std::string& levelName, const std::string& why) {
     if (auto* p = LimitsPopup::create(levelName, why)) p->show();
 }
-
 } // namespace kp

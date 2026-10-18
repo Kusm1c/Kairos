@@ -12,7 +12,6 @@ using namespace geode::prelude;
 using kpsim::engine::EngineSnap;
 
 namespace kp {
-
 void captureEngineSnap(PlayerObject* p, EngineSnap& s) {
 #define SNAP_SCALAR(T, n, off) s.n = p->n;
 #define SNAP_POINT(n, off)     s.n##_x = p->n.x; s.n##_y = p->n.y;
@@ -138,5 +137,4 @@ std::string layerDiff(PlayLayer* layer, const LayerCopy& in) {
 #undef LAYER_POD
     return out;
 }
-
 } // namespace kp

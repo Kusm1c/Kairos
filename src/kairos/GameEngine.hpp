@@ -8,7 +8,6 @@
 #include <unordered_map>
 
 namespace kp {
-
 using kpsim::search::Plan;
 using kpsim::search::RunResult;
 using kpsim::search::Tick;
@@ -39,6 +38,7 @@ public:
     RunResult run(const Plan& plan, Tick until, const Trace* trace = nullptr) override;
     uint64_t stateHash() override;
     float playerX() override;
+    float playerY(int player) override;
     int onGround(int player) override;
     int mode(int player) override;
     void setStepsPerUpdate(Tick n) override { m_stepsPerUpdate = n; }
@@ -47,8 +47,6 @@ public:
     double progressValue() const { return m_progress; }
     void restoreMismatch(Tick snapshot, Tick diverged) override;
 
-    // Restores leave GD's shader layer as it is (resetLevel moves every sprite layer in and out of
-    // it twice, most of a restore); the next real reset puts it back. Off when the level is watched.
     void setShaderSkip(bool on) { m_shaderSkip = on; }
     bool shaderSkip() const { return m_shaderSkip; }
     const std::string& statusText() const { return m_status; }
@@ -109,5 +107,4 @@ private:
     std::string m_status;
     double m_progress = -1;
 };
-
 } // namespace kp

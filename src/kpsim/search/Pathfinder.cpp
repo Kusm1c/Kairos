@@ -2,14 +2,17 @@
 #include "Timeline.hpp"
 
 #include <algorithm>
+#include <cmath>
+#include <cstdio>
 #include <cstdint>
+#include <map>
+#include <memory>
 #include <string>
 #include <unordered_set>
 #include <vector>
 
 namespace kpsim::search {
 namespace {
-
 constexpr Tick kFinishSlack = 2400;
 constexpr Tick kLearn = 240;   // states kept per trial
 constexpr Tick kSurvives = macro::kNever - 1;   // known end: alive at the horizon
@@ -24,6 +27,25 @@ uint64_t planHash(const Plan& p) {
         h = (h ^ 0xff) * 1099511628211ull;
     }
     return h;
+}
+
+bool allowedAround(const InputRules& r, const Plan& base, const Plan& cand) {
+    const Tick lo = firstDifference(base, cand), hi = lastDifference(base, cand);
+    if (lo == macro::kNever) return true;
+    for (const Holds* c : {&cand.holds, &cand.holds2}) {
+        const Holds& h = *c;
+        for (size_t i = 0; i < h.size(); ++i) {
+            const Tick end = h[i].release == macro::kNever ? h[i].press : h[i].release;
+            if (end < lo || h[i].press > hi) continue;
+            if (h[i].release != macro::kNever && h[i].release - h[i].press < r.minPress) return false;
+            if (i && (h[i].press - h[i - 1].release < r.minRelease || h[i].press - h[i - 1].press < r.minInterval))
+                return false;
+            if (i + 1 < h.size() &&
+                (h[i + 1].press - h[i].release < r.minRelease || h[i + 1].press - h[i].press < r.minInterval))
+                return false;
+        }
+    }
+    return true;
 }
 
 // Index of the hold containing t, or of the first hold after t.
@@ -122,6 +144,7 @@ private:
         m_tl.seek(first >= 2 ? first - 2 : 0);
         const Tick from = m_e.tick();
         Trace tr{&m_rec, &m_known, last};
+        if (m_o.rejoin && m_o.rejoinBase && lastDifference(*m_o.rejoinBase, cand) <= last) tr.nearKnown = m_o.rejoin;
         RunResult r = m_e.run(cand, until, &tr);
         ++m_out.trials;
         if (r.outcome == Outcome::Converged) {
@@ -229,7 +252,7 @@ void Search::run() {
                 candidates(plan, ch, death, w, m_o.rules.minPress, cands);
                 for (auto& cand : cands) {
                     if (!left) break;
-                    if (!m_o.rules.allows(cand) || !m_tried.insert(planHash(cand)).second) continue;
+                    if (!allowedAround(m_o.rules, plan, cand) || !m_tried.insert(planHash(cand)).second) continue;
                     RunResult rr = trial(plan, cand, death + m_o.horizon);
                     if ((m_out.trials & 15) == 0) m_e.status(progress(death, w));
                     const bool survives = rr.outcome != Outcome::Died;
@@ -312,7 +335,6 @@ bool Search::verify(const Plan& p, Tick until) {
     m_out.last = v;
     return true;
 }
-
 } // namespace
 
 void findPath(Engine& engine, const PathOptions& o, PathResult& out) {
@@ -330,4 +352,366 @@ void findPath(Engine& engine, const PathOptions& o, PathResult& out) {
     }
 }
 
+// ---- a route drawn by hand (followGuide) ----
+
+namespace {
+// The drawn line as y(x): points kept left to right, straight between them.
+struct Line {
+    std::vector<std::pair<float, float>> p;
+    bool usable() const { return p.size() >= 2 && p.back().first - p.front().first >= 30.f; }
+    float y(float x) const {
+        if (x <= p.front().first) return p.front().second;
+        if (x >= p.back().first) return p.back().second;
+        size_t i = 1;
+        while (p[i].first < x) ++i;
+        const auto [ax, ay] = p[i - 1];
+        const auto [bx, by] = p[i];
+        return bx > ax ? ay + (by - ay) * (x - ax) / (bx - ax) : by;
+    }
+};
+
+// Within `half` of one of the polyline's segments.
+bool byPolyline(const std::vector<std::pair<float, float>>& w, float x, float y, float half) {
+    for (size_t i = 0; i < w.size(); ++i) {
+        const auto [ax, ay] = w[i];
+        const auto [bx, by] = i + 1 < w.size() ? w[i + 1] : w[i];
+        const float dx = bx - ax, dy = by - ay, len2 = dx * dx + dy * dy;
+        const float u = std::clamp(len2 > 0.f ? ((x - ax) * dx + (y - ay) * dy) / len2 : 0.f, 0.f, 1.f);
+        const float ex = ax + u * dx - x, ey = ay + u * dy - y;
+        if (ex * ex + ey * ey <= half * half) return true;
+    }
+    return false;
+}
+
+template <class... A> std::string fmt(const char* f, A... a) {
+    char b[512];
+    std::snprintf(b, sizeof(b), f, a...);
+    return b;
+}
+
+class Tree {
+public:
+    // `prefix`: the inputs before the start (the base plan's, or a run played by hand).
+    Tree(Engine& e, const Plan& base, const GuideOptions& o, const KnownStates& rejoin, Tick end, Tick goal,
+         const Plan* prefix = nullptr)
+        : m_e(e), m_base(base), m_prefix(prefix ? *prefix : base), m_o(o), m_rejoin(rejoin), m_end(end), m_goal(goal) {}
+
+    // The plan found, verified from the start; false if none.
+    bool run(Tick start, Plan& out) {
+        const int ch = m_o.player;
+        // The snapshot to start from: the last tick before `start` with the buttons up.
+        Tick a = start > 1 ? start - 1 : 0;
+        while (a > 0 && m_prefix.anyHeldAt(a)) --a;
+        m_e.reset();
+        if (a && m_e.run(m_prefix, a).outcome != Outcome::Reached) return false;
+        const int id = m_e.save();
+        if (id < 0) return false;
+        Node n;
+        n.anchor = std::make_shared<Anchor>(&m_e, id, a);
+        n.plan = m_prefix;
+        Holds& q = n.plan.channel(ch);
+        while (!q.empty() && q.back().press >= start) q.pop_back();
+        for (const Hold& h : q) {
+            n.lastPress = h.press;
+            n.lastEdge = h.release <= start ? h.release : h.press;
+        }
+        n.held = !q.empty() && q.back().release > start;
+        if (n.held) q.back().release = macro::kNever;
+        n.tick = start;
+        m_open.emplace(n.tick, std::move(n));
+        while (!m_open.empty() && expanded < m_o.nodes) {
+            auto it = m_open.begin();
+            Node cur = std::move(it->second);
+            m_open.erase(it);
+            if (cur.tick > m_end + m_o.horizon) break;
+            ++expanded;
+            if ((expanded & 15) == 0) {
+                m_e.status("every route by the drawing: " + std::to_string(expanded) + " played, tick " +
+                           std::to_string(cur.tick));
+                m_e.progress((double)expanded / (double)m_o.nodes);
+            }
+            if (expand(cur, out)) return true;
+        }
+        return false;
+    }
+
+    size_t expanded = 0, merged = 0, deaths = 0, rejoins = 0;
+    Tick furthest = 0;
+
+private:
+    struct Anchor {
+        Anchor(Engine* e, int id, Tick tick) : e(e), id(id), tick(tick) {}
+        Anchor(const Anchor&) = delete;
+        ~Anchor() { e->drop(id); }
+        Engine* e;
+        int id;
+        Tick tick;
+    };
+    struct Node {
+        Plan plan;   // up to its last switch, the button held on if held
+        Tick tick = 0, lastEdge = 0, lastPress = 0;
+        bool held = false;
+        std::shared_ptr<Anchor> anchor;
+    };
+
+    bool expand(Node& n, Plan& out) {
+        const int ch = m_o.player;
+        const auto& r = m_o.rules;
+        if (!m_e.restore(n.anchor->id)) return false;
+        if (n.tick > n.anchor->tick && m_e.run(n.plan, n.tick).outcome != Outcome::Reached) return false;
+        // Button up: a snapshot here for its children.
+        if (!n.held && n.anchor->tick < n.tick) {
+            const int id = m_e.save();
+            if (id >= 0) n.anchor = std::make_shared<Anchor>(&m_e, id, n.tick);
+        }
+        std::vector<uint64_t> rec;
+        Trace tr;
+        tr.nearRecord = &rec;
+        tr.nearKnown = &m_rejoin;
+        tr.knownFrom = m_end;
+        const Tick until = n.tick + m_o.longest;
+        const RunResult res = m_e.run(n.plan, until, &tr);
+        furthest = std::max(furthest, res.tick);
+        if (res.outcome == Outcome::Converged || res.outcome == Outcome::Finished) {
+            ++rejoins;
+            Plan p;
+            if ((res.outcome == Outcome::Finished ? (p = n.plan, true) : splice(n, res.tick, p)) && verify(p)) {
+                out = std::move(p);
+                return true;
+            }
+        }
+        if (res.outcome == Outcome::Died) ++deaths;
+        const Tick alive = res.outcome == Outcome::Reached ? until : res.tick - 1;   // last tick it lived through
+        const Tick first = std::max<Tick>(n.tick + 1, n.lastEdge + (n.held ? r.minPress : r.minRelease));
+        for (Tick t = first; t <= alive + 1 && t <= until; ++t) {
+            if (!n.held && n.lastPress && t - n.lastPress < r.minInterval) continue;   // a press: the click rate
+            if (t < 2 || t - 1 > rec.size() || !rec[t - 2]) continue;
+            const uint64_t at = rec[t - 2];   // the state it switches from
+            const Tick sincePress = n.held ? std::min<Tick>(t - n.lastPress, r.minInterval) : 0;   // the child's
+            const uint64_t key = stateKey(t, at ^ (n.held ? 0x5bd1e995ull : 0) ^ ((uint64_t)sincePress << 48));
+            if (!m_seen.insert(key).second) {
+                ++merged;
+                continue;
+            }
+            Node c;
+            c.plan = n.plan;
+            Holds& q = c.plan.channel(ch);
+            if (n.held) q.back().release = t;
+            else q.push_back({t, macro::kNever});
+            c.tick = t;
+            c.lastEdge = t;
+            c.lastPress = n.held ? n.lastPress : t;
+            c.held = !n.held;
+            c.anchor = n.anchor;
+            m_open.emplace(t, std::move(c));
+        }
+        return false;
+    }
+
+    // The route up to tc, then the base plan's inputs: the same state as the base run at tc.
+    bool splice(const Node& n, Tick tc, Plan& out) const {
+        const int ch = m_o.player;
+        if (n.held != m_base.heldAt(tc, ch)) return false;
+        out = n.plan;
+        Holds& q = out.channel(ch);
+        const Holds& b = m_base.channel(ch);
+        size_t i = 0;
+        while (i < b.size() && b[i].press <= tc) ++i;
+        if (n.held) q.back().release = b[i - 1].release;
+        q.insert(q.end(), b.begin() + (ptrdiff_t)i, b.end());
+        return out.valid();
+    }
+
+    bool verify(const Plan& p) {
+        m_e.status("verifying the route from the start");
+        m_e.reset();
+        m_e.setStepsPerUpdate(1);
+        const RunResult v = m_e.run(p, m_goal);
+        m_e.setStepsPerUpdate(0);
+        return v.outcome == Outcome::Finished;
+    }
+
+    Engine& m_e;
+    const Plan& m_base;
+    const Plan& m_prefix;
+    const GuideOptions& m_o;
+    const KnownStates& m_rejoin;
+    Tick m_end, m_goal;
+    std::multimap<Tick, Node> m_open;   // by tick: every route, earliest first
+    std::unordered_set<uint64_t> m_seen;
+};
+
+Tick learnRejoin(Engine& engine, const Plan& base, Tick from, KnownStates& rejoin) {
+    std::vector<uint64_t> nearRec;
+    engine.reset();
+    Trace tr;
+    tr.nearRecord = &nearRec;
+    const RunResult r = engine.run(base, 240u * 60u * 30u, &tr);
+    if (r.outcome != Outcome::Finished) return 0;
+    for (Tick t = std::max<Tick>(from, 1); t <= nearRec.size(); ++t)
+        if (nearRec[t - 1]) rejoin[stateKey(t, nearRec[t - 1])] = macro::kNever;
+    return r.tick;
+}
+
+void joinPlayed(Engine& engine, const Plan& base, const GuideOptions& o, GuideResult& out) {
+    const int ch = o.player;
+    const auto& r = o.rules;
+    const Tick until = o.playedUntil;
+    std::vector<Tick> e, b;
+    for (const Hold& h : o.played->channel(ch))
+        for (Tick t : {h.press, h.release})
+            if (t <= until) e.push_back(t);
+    for (const Hold& h : base.channel(ch))
+        for (Tick t : {h.press, h.release})
+            if (t != macro::kNever) b.push_back(t);
+    const bool held = e.size() % 2 == 1;
+    Tick from = until + 1;
+    if (!e.empty()) from = std::max<Tick>(from, e.back() + (held ? r.minPress : r.minRelease));
+    size_t k = std::lower_bound(b.begin(), b.end(), from) - b.begin();
+    while (k < b.size() && (k % 2 == 1) != held) ++k;   // the base leaving the played run's level
+    e.insert(e.end(), b.begin() + (ptrdiff_t)std::min(k, b.size()), b.end());
+    Plan start = *o.played;
+    Holds& q = start.channel(ch);
+    q.clear();
+    for (size_t i = 0; i < e.size(); i += 2) q.push_back({e[i], i + 1 < e.size() ? e[i + 1] : macro::kNever});
+
+    engine.status("learning the base run");
+    KnownStates rejoin;
+    const Tick finish = learnRejoin(engine, base, until, rejoin);
+    if (!finish) {
+        out.error = "The base plan does not finish the level.";
+        return;
+    }
+    PathOptions po;
+    po.rules = r;
+    po.simplify = false;
+    po.rejoin = &rejoin;
+    po.rejoinBase = &base;
+    PathResult pr;
+    pr.plan = start;
+    findPath(engine, po, pr);
+    out.trials = pr.trials;
+    out.log = fmt("played by hand to tick %u; repair: furthest %u, %llu trials, %zu backtracks", until, pr.furthest,
+                  (unsigned long long)pr.trials, pr.backtracks);
+    Plan found;
+    bool ok = pr.verified;
+    if (ok) found = pr.plan;
+    if (!ok) {
+        Tree tree(engine, base, o, rejoin, until, finish + 2400, &start);
+        ok = tree.run(until, found);
+        out.log += fmt("; every route: %zu played, %zu merged, %zu deaths, %zu back on the run, furthest %u",
+                       tree.expanded, tree.merged, tree.deaths, tree.rejoins, tree.furthest);
+        if (!ok)
+            out.error = fmt("Your run could not be joined back to the macro (furthest: %.2f s).",
+                            std::max(pr.furthest, tree.furthest) / 240.0);
+    }
+    out.found = out.verified = ok;
+    if (ok) {
+        out.plan = found;
+        out.from = firstDifference(base, found);
+        out.to = lastDifference(base, found);
+    }
+}
+} // namespace
+
+void followGuide(Engine& engine, const Plan& base, const GuideOptions& o, GuideResult& out) {
+    out = GuideResult{};
+    out.plan = base;
+    if (o.played) return joinPlayed(engine, base, o, out);
+    Line line;
+    for (const auto& pt : o.points)
+        if (line.p.empty() || pt.first > line.p.back().first) line.p.push_back(pt);
+    const bool hasLine = line.usable();
+    float x0 = 1e30f, x1 = -1e30f;   // the drawing's extent
+    if (hasLine) {
+        x0 = line.p.front().first;
+        x1 = line.p.back().first;
+    }
+    for (const auto& w : o.walls)
+        for (const auto& [x, y] : w) {
+            x0 = std::min(x0, x);
+            x1 = std::max(x1, x);
+        }
+    if (x1 - x0 < 10.f) {
+        out.error = "Nothing drawn: draw a line left to right, or a wall.";
+        return;
+    }
+
+    // The base run's states past the drawing, on the near grid: a fix back on one finishes as it does.
+    engine.status("learning the base run");
+    engine.reset();
+    const Tick fast = o.drawnAt > 720 ? o.drawnAt - 720 : 0;
+    Tick start = 0, end = 0;   // the base run's ticks just before the drawing and past it
+    if (fast) engine.run(base, fast);
+    for (Tick t = fast + 1; !end; ++t) {
+        if (engine.run(base, t).outcome != Outcome::Reached) break;
+        if (!start && engine.playerX() >= x0 - 30.f) start = t;
+        if (engine.playerX() >= x1) end = t;
+        if (t > o.drawnAt + 1440) break;
+    }
+    if (!end) {
+        out.error = "The drawing is not on the player's route there.";
+        return;
+    }
+    std::vector<uint64_t> nearRec;
+    engine.reset();
+    Trace tr;
+    tr.nearRecord = &nearRec;
+    const RunResult baseRun = engine.run(base, 240u * 60u * 30u, &tr);
+    if (baseRun.outcome != Outcome::Finished) {
+        out.error = "The base plan does not finish the level.";
+        return;
+    }
+    KnownStates rejoin;
+    for (Tick t = end; t <= nearRec.size(); ++t)
+        if (nearRec[t - 1]) rejoin[stateKey(t, nearRec[t - 1])] = macro::kNever;
+
+    // The drawing as hazards: by a wall, or off the line's corridor over its extent.
+    const float lx0 = hasLine ? line.p.front().first : 0.f, lx1 = hasLine ? line.p.back().first : 0.f;
+    engine.forbiddenPlayer = o.player;
+    engine.forbidden = [&](float x, float y) {
+        if (x < x0 - o.wallHalf || x > x1 + o.wallHalf) return false;
+        for (const auto& w : o.walls)
+            if (byPolyline(w, x, y, o.wallHalf)) return true;
+        return hasLine && x >= lx0 && x <= lx1 && std::fabs(y - line.y(x)) > o.corridor;
+    };
+    struct Off {
+        Engine& e;
+        ~Off() { e.forbidden = nullptr; }
+    } off{engine};
+
+    PathOptions po;
+    po.rules = o.rules;
+    po.simplify = false;
+    po.rejoin = &rejoin;
+    po.rejoinBase = &base;
+    PathResult pr;
+    pr.plan = base;
+    if (o.repairFirst) findPath(engine, po, pr);
+    out.trials = pr.trials;
+    out.log = fmt("drawing x %.0f-%.0f (ticks %u-%u), %zu walls, %s; repair: furthest %u, %llu trials (%llu cut), "
+                  "%zu backtracks, %llu too tight",
+                  x0, x1, start, end, o.walls.size(), hasLine ? "a line" : "no line", pr.furthest,
+                  (unsigned long long)pr.trials, (unsigned long long)pr.pruned, pr.backtracks,
+                  (unsigned long long)pr.tooTight);
+    Plan found;
+    bool ok = pr.verified;
+    if (ok) found = pr.plan;
+    // Small fixes were not enough (a portal turning the gravity, say): every route by the drawing.
+    if (!ok && start) {
+        Tree tree(engine, base, o, rejoin, end, baseRun.tick + 2400);
+        ok = tree.run(start, found);
+        out.log += fmt("; every route: %zu played, %zu merged, %zu deaths, %zu back on the run, furthest %u",
+                       tree.expanded, tree.merged, tree.deaths, tree.rejoins, tree.furthest);
+        if (!ok)
+            out.error = fmt("No route keeps off the drawing (furthest: %.2f s).",
+                            std::max(pr.furthest, tree.furthest) / 240.0);
+    }
+    out.found = out.verified = ok;
+    if (ok) {
+        out.plan = found;
+        out.from = firstDifference(base, found);
+        out.to = lastDifference(base, found);
+    }
+}
 } // namespace kpsim::search

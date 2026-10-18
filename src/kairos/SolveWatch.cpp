@@ -1,7 +1,6 @@
-// After a Solve that wrote a solution: optimize it (setting "auto-optimize") or offer to. When the
-// solver went on without the human limits, Optimize puts them back at once.
 #include "Jobs.hpp"
 #include "ModGuard.hpp"
+#include "ProgressPanel.hpp"
 
 #include <Geode/Geode.hpp>
 #include <Geode/modify/CCScheduler.hpp>
@@ -13,7 +12,6 @@ using namespace geode::prelude;
 
 namespace kp {
 namespace {
-
 struct Watch {
     bool driving = false;
     Ref<GJGameLevel> level;
@@ -58,7 +56,36 @@ void offer(GJGameLevel* level, const std::string& limitsDropped) {
     });
 }
 
-void poll() {
+// During a Solve, the Kairos panel in place of the solver's own text: how far, what now, Stop.
+Ref<ProgressPanel> g_panel;
+float g_panelClock = 0;
+
+void panel(float dt) {
+    const SolveStatus st = solveStatus();
+    auto* pl = PlayLayer::get();
+    auto* scene = pl ? pl->getParent() : nullptr;
+    if (!st.solving || !scene) {
+        if (g_panel) g_panel->removeFromParent();
+        g_panel = nullptr;
+        return;
+    }
+    if (!g_panel || g_panel->getParent() != scene) {
+        if (g_panel) g_panel->removeFromParent();
+        g_panel = ProgressPanel::create(fmt::format("Solve  -  {}", std::string(pl->m_level->m_levelName)));
+        g_panel->onStop([] { Loader::get()->queueInMainThread([] { stopSolve(); }); });
+        scene->addChild(g_panel, 2);
+        g_panelClock = 1.f;
+    }
+    if ((g_panelClock += dt) < 0.25f) return;
+    g_panelClock = 0;
+    std::string status = st.phase.empty() ? std::string("starting") : st.phase;
+    if (st.iteration) status = fmt::format("round {}: {}", st.iteration, status);
+    g_panel->set(status, st.level, st.seconds,
+                 st.search >= 0 ? fmt::format("search {:.0f}%", st.search * 100.0) : std::string());
+}
+
+void poll(float dt) {
+    panel(dt);
     const bool driving = solverDriving();
     if (driving && !g.level) {
         if (auto* pl = PlayLayer::get(); pl && pl->m_level) {
@@ -81,18 +108,16 @@ void poll() {
     if (!driving) g.level = nullptr;
     g.driving = driving;
 }
-
 } // namespace
 
 void onLimitsDropped(const std::string& where) {
     if (g.limitsDropped.empty()) g.limitsDropped = where;
 }
-
 } // namespace kp
 
 class $modify(KairosSolveWatch, CCScheduler) {
     void update(float dt) {
-        kp::poll();
+        kp::poll(dt);
         CCScheduler::update(dt);
     }
 };

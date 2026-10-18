@@ -4,7 +4,6 @@
 #include <string>
 
 namespace kpsim::search {
-
 constexpr int kWidthBucketCount = 11;
 
 struct WindowStats {
@@ -25,9 +24,6 @@ extern const char* const kWidthBuckets[kWidthBucketCount];
 
 WindowStats windowStats(const WindowReport& r, double sigmaMs);
 
-// Plain text, one record per line, for the stats menu. Older versions do not read.
-// `plan` is the fingerprint of the plan the windows were measured on.
 std::string writeWindowFile(const WindowReport& r, const std::string& macro, uint64_t plan);
 bool readWindowFile(const std::string& text, WindowReport& r, std::string& macro, uint64_t& plan);
-
 } // namespace kpsim::search

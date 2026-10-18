@@ -3,13 +3,13 @@
 
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 namespace kpsim::search {
-
 using macro::Hold;
 using macro::Holds;
 using macro::Plan;
@@ -107,6 +107,7 @@ public:
 
     virtual uint64_t stateHash() = 0;
     virtual float playerX() = 0;
+    virtual float playerY(int player) { return 0.f; }
     // 1 on the ground, 0 in the air, -1 unknown.
     virtual int onGround(int player) { return -1; }
     // Mode (kCube...), -1 unknown.
@@ -120,6 +121,8 @@ public:
     virtual void progress(double) {}
     // A snapshot whose replay left the recorded trace at `diverged`.
     virtual void restoreMismatch(Tick snapshot, Tick diverged) {}
-};
 
+    std::function<bool(float x, float y)> forbidden;
+    int forbiddenPlayer = 0;
+};
 } // namespace kpsim::search
